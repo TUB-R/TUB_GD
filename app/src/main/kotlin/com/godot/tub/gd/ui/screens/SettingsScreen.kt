@@ -8,6 +8,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -41,7 +42,8 @@ fun SettingsScreen(
     val scope = rememberCoroutineScope()
     var showPathDialog by remember { mutableStateOf(false) }
     var showAddExtDialog by remember { mutableStateOf(false) }
-    var showSummaryDialog by remember { mutableStateOf(false) } // 新增项目概要弹窗状态
+    var showSummaryDialog by remember { mutableStateOf(false) }
+    var showPromptDialog by remember { mutableStateOf(false) }
     
     val scrollState = rememberScrollState()
 
@@ -59,6 +61,20 @@ fun SettingsScreen(
         ),
         label = "bounce"
     )
+
+    // 外层显示的动态颜色
+    val promptModeColor = when (settings.promptMode) {
+        "GENERAL" -> Color(0xFF4CAF50) // 绿色
+        "TUB_STYLE" -> Color(0xFFFFC107) // 黄色
+        else -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f) // 灰色
+    }
+    
+    val promptModeText = when (settings.promptMode) {
+        "NONE" -> "纯净模式（不注入）"
+        "GENERAL" -> "通用写项目"
+        "TUB_STYLE" -> "TUB 同款（写 Python）"
+        else -> "未选择"
+    }
 
     if (showPathDialog) {
         AlertDialog(
@@ -108,6 +124,54 @@ fun SettingsScreen(
                 }) { Text("添加") }
             },
             dismissButton = { TextButton(onClick = { showAddExtDialog = false }) { Text("取消") } }
+        )
+    }
+
+    if (showPromptDialog) {
+        val promptModes = listOf(
+            Triple("NONE", "不注入（纯净模式）", MaterialTheme.colorScheme.onSurface),
+            Triple("GENERAL", "通用写项目（默认）", Color(0xFF4CAF50)),
+            Triple("TUB_STYLE", "TUB 同款（写 Python 脚本）", Color(0xFFFFC107))
+        )
+        AlertDialog(
+            onDismissRequest = { showPromptDialog = false },
+            title = { Text("选择 AI 提示词模式") },
+            text = {
+                Column {
+                    promptModes.forEach { (mode, label, _) ->
+                        val isSelected = (settings.promptMode == mode)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .selectable(
+                                    selected = isSelected,
+                                    onClick = {
+                                        onUpdateSettings { it.copy(promptMode = mode) }
+                                        showPromptDialog = false
+                                    }
+                                )
+                                .padding(vertical = 12.dp, horizontal = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // 系统默认单选框
+                            RadioButton(
+                                selected = isSelected,
+                                onClick = null
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            // 文字统一使用系统默认颜色
+                            Text(
+                                text = label, 
+                                color = MaterialTheme.colorScheme.onSurface,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showPromptDialog = false }) { Text("取消") }
+            }
         )
     }
 
@@ -197,7 +261,7 @@ fun SettingsScreen(
                 onSelected = { 
                     val m = when(it) { 0 -> "PROJECT_SUMMARY"; 1 -> "DIR_ONLY"; else -> "FULL_EXPORT" }
                     if (m == "PROJECT_SUMMARY") {
-                        showSummaryDialog = true // 核心修复：点击时触发弹窗
+                        showSummaryDialog = true
                     }
                     onUpdateSettings { s -> s.copy(exportMode = m) } 
                 }
@@ -217,18 +281,22 @@ fun SettingsScreen(
             if (settings.exportMode == "FULL_EXPORT") {
                 Spacer(modifier = Modifier.height(16.dp))
                 Row(
-                    modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface, RoundedCornerShape(16.dp)).padding(16.dp),
+                    modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface, RoundedCornerShape(16.dp))
+                        .clickable { showPromptDialog = true }
+                        .padding(16.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("注入 AI 创作提示词", color = MaterialTheme.colorScheme.onBackground)
-                        Text("追加 Godot 专属开发约束", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f), fontSize = 12.sp)
+                        Text("AI 创作提示词模式", color = MaterialTheme.colorScheme.onBackground)
+                        Text(
+                            text = promptModeText,
+                            color = promptModeColor,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp
+                        )
                     }
-                    Switch(
-                        checked = settings.injectPrompt,
-                        onCheckedChange = { onUpdateSettings { s -> s.copy(injectPrompt = it) } }
-                    )
+                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface.copy(alpha=0.3f))
                 }
                 
                 Spacer(modifier = Modifier.height(16.dp))
@@ -319,7 +387,7 @@ fun SettingsScreen(
                         }
                         Spacer(modifier = Modifier.height(16.dp))
                         Text("Godot整合工具", color = MaterialTheme.colorScheme.onSurface, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                        Text("v1.0.0", color = MaterialTheme.colorScheme.onSurface.copy(alpha=0.5f), fontSize = 12.sp)
+                        Text("v1.0.9", color = MaterialTheme.colorScheme.onSurface.copy(alpha=0.5f), fontSize = 12.sp)
                         Spacer(modifier = Modifier.height(16.dp))
                         HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha=0.1f))
                         Spacer(modifier = Modifier.height(16.dp))

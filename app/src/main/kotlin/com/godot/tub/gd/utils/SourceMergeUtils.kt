@@ -22,12 +22,36 @@ object SourceMergeUtils {
         val documentFile: DocumentFile? = null, val children: MutableList<FileNode> = mutableListOf()
     )
 
+    data class ScanResult(val content: String, val godotVersion: String)
+
     fun scanDirectory(
-        context: Context, treeUri: Uri, outputFormat: String, exportMode: String, injectPrompt: Boolean, customExcludeExts: Set<String>, maxFileSizeKb: Int
-    ): String {
-        val rootDoc = DocumentFile.fromTreeUri(context, treeUri) ?: return "无法读取该文件夹"
-        val rootNode = FileNode(rootDoc.name ?: "Project", true, rootDoc.uri, 0, rootDoc)
+        context: Context, treeUri: Uri, outputFormat: String, exportMode: String, promptMode: String, customExcludeExts: Set<String>, maxFileSizeKb: Int
+    ): ScanResult {
+        val rootDoc = DocumentFile.fromTreeUri(context, treeUri) ?: return ScanResult("无法读取该文件夹", "Unknown")
         
+        var detectedVersion = "Unknown"
+        val projectFile = rootDoc.findFile("project.godot")
+        
+        if (projectFile != null && projectFile.isFile) {
+            try {
+                val text = context.contentResolver.openInputStream(projectFile.uri)?.bufferedReader()?.use { it.readText() } ?: ""
+                val regexFeatures = Regex("""config/features\s*=\s*PackedStringArray\("([^"]+)"""")
+                val matchFeatures = regexFeatures.find(text)
+                if (matchFeatures != null) {
+                    detectedVersion = matchFeatures.groupValues[1]
+                } else {
+                    val regexConfig = Regex("""config_version\s*=\s*(\d+)""")
+                    val matchConfig = regexConfig.find(text)
+                    if (matchConfig != null && matchConfig.groupValues[1] == "5") {
+                        detectedVersion = "4.x"
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+
+        val rootNode = FileNode(rootDoc.name ?: "Project", true, rootDoc.uri, 0, rootDoc)
         fun parseDir(doc: DocumentFile, node: FileNode) {
             doc.listFiles().forEach { child ->
                 if (child.isDirectory) {
@@ -43,16 +67,17 @@ object SourceMergeUtils {
         }
         parseDir(rootDoc, rootNode)
 
-        return buildOutput(context, rootNode.name, rootNode, outputFormat, exportMode, injectPrompt, customExcludeExts, maxFileSizeKb)
+        val content = buildOutput(context, rootNode.name, rootNode, outputFormat, exportMode, promptMode, customExcludeExts, maxFileSizeKb, detectedVersion)
+        return ScanResult(content, detectedVersion)
     }
 
-    fun processMultipleFiles(context: Context, uris: List<Uri>, outputFormat: String, injectPrompt: Boolean, customExcludeExts: Set<String>, maxFileSizeKb: Int): String {
+    fun processMultipleFiles(context: Context, uris: List<Uri>, outputFormat: String, promptMode: String, customExcludeExts: Set<String>, maxFileSizeKb: Int): ScanResult {
         val sb = StringBuilder()
         val date = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date())
-        
+        val detectedVersion = "Unknown" 
+
         if (outputFormat == "XML") {
             sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<project name=\"MultiFiles\" generated=\"$date\">\n")
-            sb.append("  <note>此文档由用户手动选取的多个独立文件合并而成，可能不属于同一目录结构。</note>\n")
             sb.append("  <files>\n")
             uris.forEach { uri ->
                 var name = "unknown_file"
@@ -80,21 +105,16 @@ object SourceMergeUtils {
                 sb.append("    </file>\n")
             }
             sb.append("  </files>\n")
-            if (injectPrompt) {
-                sb.append("  <prompt>\n    <![CDATA[\n").append(buildPrompt()).append("\n]]>\n  </prompt>\n")
+            if (promptMode != "NONE") {
+                sb.append("  <prompt>\n    <![CDATA[\n").append(buildPrompt(promptMode, detectedVersion)).append("\n]]>\n  </prompt>\n")
             }
             sb.append("</project>")
-            return sb.toString()
+            return ScanResult(sb.toString(), detectedVersion)
         }
 
-        // TXT 和 Markdown 的分支
         val isMd = (outputFormat == "MARKDOWN")
-        
-        if (isMd) {
-            sb.append("# 多文件合并\n\n> 文件数: ${uris.size} | 生成时间: $date\n> *注：此为独立选取的文件合并，可能不属于同一目录树。*\n\n")
-        } else {
-            sb.append("多文件合并\n文件数: ${uris.size} | 生成时间: $date\n注：此为独立选取的文件合并。\n\n")
-        }
+        if (isMd) sb.append("# 多文件合并\n\n> 文件数: ${uris.size} | 生成时间: $date\n\n")
+        else sb.append("多文件合并\n文件数: ${uris.size} | 生成时间: $date\n\n")
         
         uris.forEachIndexed { index, uri ->
             var name = "unknown_file"
@@ -124,32 +144,33 @@ object SourceMergeUtils {
             }
         }
         
-        if (injectPrompt) {
-            if (isMd) sb.append(buildPrompt())
-            else sb.append(buildPrompt().replace("##", "").replace("**", "")) // TXT 剥离 Markdown 语法
+        if (promptMode != "NONE") {
+            val prompt = buildPrompt(promptMode, detectedVersion)
+            if (isMd) sb.append(prompt)
+            else sb.append(prompt.replace("##", "").replace("**", ""))
         }
-        return sb.toString()
+        return ScanResult(sb.toString(), detectedVersion)
     }
 
     private fun buildOutput(
         context: Context, projectName: String, rootNode: FileNode, 
-        outputFormat: String, exportMode: String, injectPrompt: Boolean, customExcludeExts: Set<String>, maxFileSizeKb: Int
+        outputFormat: String, exportMode: String, promptMode: String, customExcludeExts: Set<String>, maxFileSizeKb: Int,
+        godotVersion: String
     ): String {
         val sb = StringBuilder()
         val date = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date())
         
-        // ================= XML 模式 =================
         if (outputFormat == "XML") {
-            sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<project name=\"$projectName\" generated=\"$date\">\n")
+            sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<project name=\"$projectName\" godot_version=\"$godotVersion\" generated=\"$date\">\n")
             if (exportMode == "PROJECT_SUMMARY") {
                 sb.append("  <summary>暂时没有设计awa</summary>\n</project>")
                 return sb.toString()
             }
             
             if (exportMode != "PROJECT_SUMMARY") {
-                sb.append("  <structure>\n")
+                sb.append("  <structure>\n    <![CDATA[\n")
                 sb.append(buildTree(rootNode).lines().joinToString("\n") { "    $it" })
-                sb.append("\n  </structure>\n")
+                sb.append("\n    ]]>\n  </structure>\n")
             }
             
             if (exportMode == "FULL_EXPORT") {
@@ -160,7 +181,6 @@ object SourceMergeUtils {
                         val ext = node.name.substringAfterLast(".").lowercase()
                         val isCustomFiltered = customExcludeExts.contains(".$ext")
                         sb.append("    <file path=\"$relPath\">\n")
-                        
                         if (isCustomFiltered) {
                             sb.append("      <![CDATA[\n[内容已省略：命中自定义过滤规则]\n]]>\n")
                         } else if (node.size > maxFileSizeKb * 1024L) {
@@ -185,23 +205,19 @@ object SourceMergeUtils {
                 sb.append("  </files>\n")
             }
             
-            if (exportMode == "FULL_EXPORT" && injectPrompt) {
-                sb.append("  <prompt>\n    <![CDATA[\n").append(buildPrompt()).append("\n]]>\n  </prompt>\n")
+            if (exportMode == "FULL_EXPORT" && promptMode != "NONE") {
+                sb.append("  <prompt>\n    <![CDATA[\n").append(buildPrompt(promptMode, godotVersion)).append("\n]]>\n  </prompt>\n")
             }
-            
             sb.append("</project>")
             return sb.toString()
         }
 
-        // ================= TXT / Markdown 模式 =================
         val isMd = (outputFormat == "MARKDOWN")
-        
         if (isMd) {
             sb.append("# 项目: $projectName\n\n")
             sb.append("> 生成时间: $date\n\n")
             if (exportMode == "DIR_ONLY") sb.append("*本文档仅包含项目的目录结构。*\n\n") else sb.append("*本文档包含目录结构与文件内容。*\n\n")
         } else {
-            // TXT 纯净版头部
             sb.append("项目: $projectName\n")
             sb.append("生成时间: $date\n\n")
         }
@@ -209,9 +225,7 @@ object SourceMergeUtils {
         if (exportMode != "PROJECT_SUMMARY") {
             if (isMd) sb.append("## 目录结构\n\n```\n")
             else sb.append("--- 目录结构 ---\n\n")
-            
             sb.append(buildTree(rootNode))
-            
             if (isMd) sb.append("\n```\n\n") else sb.append("\n\n")
         }
 
@@ -255,9 +269,10 @@ object SourceMergeUtils {
             rootNode.children.sortedBy { it.name.lowercase() }.forEach { extractContent(it, "") }
         }
 
-        if (exportMode == "FULL_EXPORT" && injectPrompt) {
-            if (isMd) sb.append(buildPrompt())
-            else sb.append(buildPrompt().replace("##", "").replace("**", "")) // TXT 剥离 Markdown 语法
+        if (exportMode == "FULL_EXPORT" && promptMode != "NONE") {
+            val prompt = buildPrompt(promptMode, godotVersion)
+            if (isMd) sb.append(prompt)
+            else sb.append(prompt.replace("##", "").replace("**", ""))
         }
         return sb.toString()
     }
@@ -269,7 +284,6 @@ object SourceMergeUtils {
     private fun isTextFile(context: Context, fileName: String, size: Long, uri: Uri): Boolean {
         val ext = fileName.substringAfterLast(".").lowercase()
         val lowerName = fileName.lowercase()
-        
         if (TEXT_EXTS.contains(ext)) return true
         if (lowerName == ".gitignore" || lowerName == ".editorconfig" || lowerName == ".gitattributes" || lowerName == ".nomedia") return true
         
@@ -290,19 +304,14 @@ object SourceMergeUtils {
 
     private fun buildTree(node: FileNode, prefix: String = ""): String {
         val sb = StringBuilder()
-        if (prefix.isEmpty()) {
-            sb.append("└── 📁 ${node.name}\n")
-        }
-        
+        if (prefix.isEmpty()) sb.append("└── 📁 ${node.name}\n")
         val children = node.children.sortedWith(compareBy({ !it.isDir }, { it.name.lowercase() }))
         children.forEachIndexed { i, child ->
             val isLast = i == children.size - 1
             val conn = if (isLast) "└── " else "├── "
             val icon = if (child.isDir) "📁" else "📄"
-            
             val actualPrefix = if (prefix.isEmpty()) "    " else prefix
             sb.append("$actualPrefix$conn$icon ${child.name}\n")
-            
             if (child.isDir) {
                 val nextPrefix = actualPrefix + if (isLast) "    " else "│   "
                 sb.append(buildTree(child, nextPrefix))
@@ -321,6 +330,61 @@ object SourceMergeUtils {
     private fun getLang(ext: String) = when (ext.lowercase()) {
         "kt" -> "kotlin"; "py" -> "python"; "gd" -> "gdscript"; "xml" -> "xml"; "json" -> "json"; "svg" -> "xml"; else -> ""
     }
-    
-    private fun buildPrompt(): String = "\n\n---\n## AI 创作提示（工具自动注入）\n\n### 身份\n你是资深 Godot 游戏开发大师，熟悉当前版本 API、节点树架构、信号系统、渲染管线与移动端优化。\n\n### 技术红线\n- **不要手写 `.import`**：每个资源旁的 `.import` 文件由编辑器自动生成。\n- **跨文件引用**：用 `res://` 路径，不要用绝对路径。\n- **`.import/` 目录是缓存**：所有导入产物由编辑器重建，不要手动编辑。\n"
+
+    // ==========================================
+    // 提示词：区分已知版本与未知版本
+    // ==========================================
+    private fun buildPrompt(mode: String, version: String): String {
+        if (mode == "NONE") return ""
+        
+        val sb = StringBuilder()
+        sb.append("\n\n---\n## 🎮 AI 创作提示（工具自动注入）\n\n")
+        sb.append("### 身份与背景\n")
+        
+        if (version == "Unknown" || version == "4.x") {
+            // 未知版本的处理
+            sb.append("你是一个资深的 Godot 游戏开发者。当前上下文包含了一个完整的 Godot 游戏项目源码。\n")
+            sb.append("**注意：系统未能从配置中精确识别出当前的 Godot 具体版本，请你在阅读代码前，先检查 `project.godot` 文件中的 `config/features` 或 `config_version` 字段，自行判断当前项目的具体版本，并根据该版本调整你的代码风格。**\n\n")
+            sb.append("### 通用 Godot 4.x 安全红线\n")
+            sb.append("- 跨文件引用资源请使用 `res://` 路径，避免使用绝对路径。\n")
+            sb.append("- 严禁使用 Godot 3 的 API（如 `KinematicBody`、`instance()` 等）。\n")
+            sb.append("- 如果在代码中发现 `.uid` 或 `unique_id`，请注意它们是由较高版本编辑器自动生成的，请勿主动修改或手写。\n")
+        } else {
+            // 已知版本的处理
+            val v = version.toFloatOrNull() ?: 4.0f
+            sb.append("你是一个资深的 Godot $version 游戏开发者。当前上下文包含了一个完整的 Godot $version 游戏项目源码。请围绕该游戏进行代码编写、重构或功能添加。\n\n")
+            
+            sb.append("### Godot $version 技术红线\n")
+            sb.append("- 跨文件引用资源请使用 `res://` 路径，避免使用绝对路径。\n")
+            sb.append("- 请严格使用 GDScript 和 Godot 4.x 的 API。\n")
+
+            if (v >= 4.4f) {
+                sb.append("- **.uid 文件**：由编辑器自动生成，请勿手写或修改。\n")
+            }
+            if (v >= 4.6f) {
+                sb.append("- **unique_id**：`.tscn` 中的节点唯一标识由编辑器维护，请勿手写。\n")
+                sb.append("- **物理引擎**：默认使用 Jolt Physics。\n")
+            }
+            if (v >= 4.7f) {
+                sb.append("- **is_class 参数**：参数类型为 StringName，请使用 &\"ClassName\" 语法。\n")
+                sb.append("- **RichTextLabel.add_image**：参数变更为 width_unit / height_unit。\n")
+                sb.append("- **PackedArray 赋值**：直接设置不触发 setter，请使用 .set(i, x)。\n")
+                sb.append("- **类型化返回值**：重写方法时必须显式写出 return 语句。\n")
+            }
+        }
+        
+        if (mode == "TUB_STYLE") {
+            sb.append("\n### TUB 自动化工作流\n")
+            sb.append("为了批量修改项目文件，请编写一个可以直接在项目根目录运行的 **纯 Python 脚本**。\n")
+            sb.append("该脚本的功能是：\n")
+            sb.append("1. **创建**所需的新文件。\n")
+            sb.append("2. **覆盖修改**现有的文件。\n")
+            sb.append("3. **删除**不需要的旧文件。\n")
+            sb.append("请直接将修改逻辑写入 Python 脚本中，供用户一键执行。\n")
+        }
+        
+        sb.append("\n请仔细阅读上述项目结构及代码，等待用户的具体游戏开发需求。\n")
+        
+        return sb.toString()
+    }
 }

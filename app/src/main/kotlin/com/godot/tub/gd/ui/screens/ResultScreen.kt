@@ -78,6 +78,10 @@ fun ResultScreen(result: ExportResult, onBack: () -> Unit) {
                     Column {
                         Text(result.fileName, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
                         Text(result.filePath, color = Color.White.copy(alpha = 0.6f), fontSize = 12.sp)
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Box(modifier = Modifier.background(Color.White.copy(alpha=0.2f), RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 2.dp)) {
+                            Text("Godot ${result.godotVersion} 适配", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
             }

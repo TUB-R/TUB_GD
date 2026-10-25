@@ -20,7 +20,7 @@ data class AppSettings(
     val outputPath: String = "/storage/emulated/0/Documents/",
     val format: String = "MARKDOWN",
     val exportMode: String = "DIR_ONLY",
-    val injectPrompt: Boolean = true,
+    val promptMode: String = "GENERAL", // 三档模式: NONE, GENERAL, TUB_STYLE
     val customExcludeExts: Set<String> = emptySet(),
     val maxFileSizeKb: Int = 100
 )
@@ -28,6 +28,7 @@ data class AppSettings(
 data class ExportResult(
     val fileName: String, val filePath: String, val charCount: Int,
     val tokenCount: Int, val lineCount: Int, val fullText: String,
+    val godotVersion: String = "4.x",
     val timestamp: Long = System.currentTimeMillis()
 )
 
@@ -55,25 +56,23 @@ class MainViewModel : ViewModel() {
             outputPath = finalPath,
             format = prefs.getString("format", "MARKDOWN") ?: "MARKDOWN",
             exportMode = prefs.getString("exportMode", "DIR_ONLY") ?: "DIR_ONLY",
-            injectPrompt = prefs.getBoolean("injectPrompt", true),
+            promptMode = prefs.getString("promptMode", "GENERAL") ?: "GENERAL",
             customExcludeExts = customExts,
             maxFileSizeKb = prefs.getInt("maxFileSizeKb", 100)
         )
-        
         loadHistory()
     }
 
     fun updateSettings(update: (AppSettings) -> AppSettings) {
         val newSettings = update(settings.value)
         settings.value = newSettings
-        
         if (::prefs.isInitialized) {
             prefs.edit().apply {
                 putInt("themeMode", newSettings.themeMode)
                 putString("outputPath", newSettings.outputPath)
                 putString("format", newSettings.format)
                 putString("exportMode", newSettings.exportMode)
-                putBoolean("injectPrompt", newSettings.injectPrompt)
+                putString("promptMode", newSettings.promptMode)
                 putString("customExcludeExts", newSettings.customExcludeExts.joinToString(","))
                 putInt("maxFileSizeKb", newSettings.maxFileSizeKb)
                 apply()
@@ -86,14 +85,12 @@ class MainViewModel : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val cfg = settings.value
-                val text = SourceMergeUtils.scanDirectory(
-                    context, uri, cfg.format, cfg.exportMode, cfg.injectPrompt, cfg.customExcludeExts, cfg.maxFileSizeKb
+                val scanResult = SourceMergeUtils.scanDirectory(
+                    context, uri, cfg.format, cfg.exportMode, cfg.promptMode, cfg.customExcludeExts, cfg.maxFileSizeKb
                 )
-                
                 val rootDoc = DocumentFile.fromTreeUri(context, uri)
                 val folderName = rootDoc?.name ?: "Project"
-                
-                saveResult(folderName, text)
+                saveResult(folderName, scanResult.content, scanResult.godotVersion)
             } catch (e: Exception) {
                 e.printStackTrace()
             } finally {
@@ -107,11 +104,10 @@ class MainViewModel : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val cfg = settings.value
-                // 修复：传入 cfg.format 参数
-                val text = SourceMergeUtils.processMultipleFiles(
-                    context, uris, cfg.format, cfg.injectPrompt, cfg.customExcludeExts, cfg.maxFileSizeKb
+                val scanResult = SourceMergeUtils.processMultipleFiles(
+                    context, uris, cfg.format, cfg.promptMode, cfg.customExcludeExts, cfg.maxFileSizeKb
                 )
-                saveResult("MultiFiles", text)
+                saveResult("MultiFiles", scanResult.content, scanResult.godotVersion)
             } catch (e: Exception) {
                 e.printStackTrace()
             } finally {
@@ -120,7 +116,7 @@ class MainViewModel : ViewModel() {
         }
     }
 
-    private fun saveResult(baseName: String, text: String) {
+    private fun saveResult(baseName: String, text: String, godotVersion: String) {
         val cfg = settings.value
         val outDir = File(cfg.outputPath)
         if (!outDir.exists()) outDir.mkdirs()
@@ -131,7 +127,7 @@ class MainViewModel : ViewModel() {
         val newResult = ExportResult(
             fileName = outFile.name, filePath = outDir.absolutePath,
             charCount = text.length, tokenCount = text.length / 4,
-            lineCount = text.lines().size, fullText = text
+            lineCount = text.lines().size, fullText = text, godotVersion = godotVersion
         )
         result.value = newResult
         addHistory(newResult)
@@ -153,6 +149,7 @@ class MainViewModel : ViewModel() {
             obj.put("tokenCount", it.tokenCount)
             obj.put("lineCount", it.lineCount)
             obj.put("fullText", it.fullText)
+            obj.put("godotVersion", it.godotVersion)
             obj.put("timestamp", it.timestamp)
             jsonArray.put(obj)
         }
@@ -174,6 +171,7 @@ class MainViewModel : ViewModel() {
                     tokenCount = obj.getInt("tokenCount"),
                     lineCount = obj.getInt("lineCount"),
                     fullText = obj.getString("fullText"),
+                    godotVersion = obj.optString("godotVersion", "4.x"),
                     timestamp = obj.getLong("timestamp")
                 ))
             }

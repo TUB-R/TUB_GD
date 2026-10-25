@@ -40,6 +40,7 @@ fun HomeScreen(
     onNavigateToSettings: () -> Unit
 ) {
     var showHistoryDialog by remember { mutableStateOf(false) }
+    var showVersionWarning by remember { mutableStateOf(false) }
     var showClearConfirmDialog by remember { mutableStateOf(false) } // 清空二次确认弹窗
 
     val folderLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
@@ -70,6 +71,18 @@ fun HomeScreen(
         )
     }
 
+
+    if (showVersionWarning) {
+        AlertDialog(
+            onDismissRequest = { showVersionWarning = false },
+            title = { Text("配置检测提示") },
+            text = { Text("未能准确识别出具体的 Godot 编辑器版本。建议先在 Godot 中打开项目并创建一个默认场景保存一次，以便生成完整的配置文件。\n\n提示词已自动调整为兼容模式，AI 将会通过阅读配置文件自行判断版本。") },
+            confirmButton = {
+                TextButton(onClick = { showVersionWarning = false }) { Text("知道了") }
+            }
+        )
+    }
+    
     if (showHistoryDialog) {
         AlertDialog(
             onDismissRequest = { showHistoryDialog = false },
