@@ -24,6 +24,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
@@ -49,7 +50,7 @@ fun ResultScreen(result: ExportResult, onBack: () -> Unit) {
                 result.fileName.endsWith(".md") -> "text/markdown"
                 result.fileName.endsWith(".txt") -> "text/plain"
                 result.fileName.endsWith(".xml") -> "text/xml"
-                else -> "application/octet-stream"
+                else -> "text/plain"
             }
             val intent = Intent(Intent.ACTION_SEND).apply {
                 type = mimeType
@@ -78,9 +79,11 @@ fun ResultScreen(result: ExportResult, onBack: () -> Unit) {
                     Column {
                         Text(result.fileName, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
                         Text(result.filePath, color = Color.White.copy(alpha = 0.6f), fontSize = 12.sp)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Box(modifier = Modifier.background(Color.White.copy(alpha=0.2f), RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 2.dp)) {
-                            Text("Godot ${result.godotVersion} 适配", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        if (result.godotVersion.isNotBlank() && result.godotVersion != "Unknown") {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Box(modifier = Modifier.background(Color.White.copy(alpha=0.2f), RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 2.dp)) {
+                                Text("Godot ${result.godotVersion} 适配", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
                 }
@@ -95,7 +98,7 @@ fun ResultScreen(result: ExportResult, onBack: () -> Unit) {
             // 替换 Build 为 Settings
             StatCard("Token", "~${result.tokenCount}", Icons.Default.Settings, Modifier.weight(1f))
             // 替换 Code 为 List
-            StatCard("行数", "${result.lineCount}", Icons.Default.List, Modifier.weight(1f))
+            StatCard("行数", "${result.lineCount}", Icons.AutoMirrored.Filled.List, Modifier.weight(1f))
         }
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -128,13 +131,32 @@ fun ResultScreen(result: ExportResult, onBack: () -> Unit) {
         
         Text("内容预览", color = MaterialTheme.colorScheme.onBackground, fontSize = 14.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 12.dp))
 
+        // 修复：按字符数截断，50000 字符足以避免渲染 OOM 卡死
+        val previewLimitChars = 50000
+        val isTooLarge = result.fullText.length > previewLimitChars
+        val previewText = if (isTooLarge) result.fullText.take(previewLimitChars) else result.fullText
+
         Box(
             modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface, RoundedCornerShape(16.dp))
                 .border(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f), RoundedCornerShape(16.dp))
                 .padding(16.dp)
                 .verticalScroll(rememberScrollState())
         ) {
-            Text(result.fullText, color = MaterialTheme.colorScheme.onSurface, fontFamily = FontFamily.Monospace, fontSize = 13.sp, lineHeight = 20.sp)
+            Column {
+                Text(previewText, color = MaterialTheme.colorScheme.onSurface, fontFamily = FontFamily.Monospace, fontSize = 13.sp, lineHeight = 20.sp)
+                if (isTooLarge) {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Box(modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.error.copy(alpha = 0.1f), RoundedCornerShape(8.dp)).padding(12.dp)) {
+                        Text(
+                            "内容过长，超出 300KB 预览限制。为保证流畅度已自动截断。完整内容请点击上方『复制内容』或『分享文件』查看。",
+                            color = MaterialTheme.colorScheme.error,
+                            fontSize = 12.sp,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+            }
         }
     }
 }

@@ -1,4 +1,3 @@
-
 package com.godot.tub.gd.ui.screens
 
 import android.net.Uri
@@ -34,23 +33,18 @@ fun HomeScreen(
     format: String,
     historyList: List<ExportResult>,
     onFolderSelected: (Uri) -> Unit,
-    onFilesSelected: (List<Uri>) -> Unit,
+    onNavigateToMultiFile: () -> Unit,
     onHistoryItemClick: (ExportResult) -> Unit,
     onClearHistory: () -> Unit,
     onNavigateToSettings: () -> Unit
 ) {
     var showHistoryDialog by remember { mutableStateOf(false) }
-    var showVersionWarning by remember { mutableStateOf(false) }
-    var showClearConfirmDialog by remember { mutableStateOf(false) } // 清空二次确认弹窗
+    var showClearConfirmDialog by remember { mutableStateOf(false) }
 
     val folderLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         uri?.let { onFolderSelected(it) }
     }
-    val filesLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-        if (uris.isNotEmpty()) onFilesSelected(uris)
-    }
 
-    // 清空二次确认弹窗
     if (showClearConfirmDialog) {
         AlertDialog(
             onDismissRequest = { showClearConfirmDialog = false },
@@ -61,32 +55,16 @@ fun HomeScreen(
                     onClearHistory()
                     showClearConfirmDialog = false
                     showHistoryDialog = false
-                }) {
-                    Text("确定清空", color = MaterialTheme.colorScheme.error)
-                }
+                }) { Text("确定清空", color = MaterialTheme.colorScheme.error) }
             },
-            dismissButton = {
-                TextButton(onClick = { showClearConfirmDialog = false }) { Text("取消") }
-            }
+            dismissButton = { TextButton(onClick = { showClearConfirmDialog = false }) { Text("取消") } }
         )
     }
 
-
-    if (showVersionWarning) {
-        AlertDialog(
-            onDismissRequest = { showVersionWarning = false },
-            title = { Text("配置检测提示") },
-            text = { Text("未能准确识别出具体的 Godot 编辑器版本。建议先在 Godot 中打开项目并创建一个默认场景保存一次，以便生成完整的配置文件。\n\n提示词已自动调整为兼容模式，AI 将会通过阅读配置文件自行判断版本。") },
-            confirmButton = {
-                TextButton(onClick = { showVersionWarning = false }) { Text("知道了") }
-            }
-        )
-    }
-    
     if (showHistoryDialog) {
         AlertDialog(
             onDismissRequest = { showHistoryDialog = false },
-            title = { Text("历史记录") }, // 纯文字，无表情
+            title = { Text("历史记录") },
             text = {
                 if (historyList.isEmpty()) {
                     Text("暂无历史记录", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
@@ -110,16 +88,10 @@ fun HomeScreen(
             },
             dismissButton = {
                 if (historyList.isNotEmpty()) {
-                    TextButton(onClick = { showClearConfirmDialog = true }) {
-                        Text("清空", color = MaterialTheme.colorScheme.error)
-                    }
+                    TextButton(onClick = { showClearConfirmDialog = true }) { Text("清空", color = MaterialTheme.colorScheme.error) }
                 }
             },
-            confirmButton = {
-                TextButton(onClick = { showHistoryDialog = false }) {
-                    Text("关闭")
-                }
-            }
+            confirmButton = { TextButton(onClick = { showHistoryDialog = false }) { Text("关闭") } }
         )
     }
 
@@ -139,7 +111,7 @@ fun HomeScreen(
         Spacer(modifier = Modifier.weight(1f))
 
         Box(
-            modifier = Modifier.size(110.dp).background(Brush.linearGradient(listOf(Color(0xFF5C8DF6), Color(0xFF4A90E2))), CircleShape),
+            modifier = Modifier.size(110.dp).background(Brush.linearGradient(listOf(Color(0xFFD4E157), Color(0xFF8BC34A))), CircleShape),
             contentAlignment = Alignment.Center
         ) {
             Text(">/<", color = Color.White, fontSize = 36.sp, fontWeight = FontWeight.Bold)
@@ -151,12 +123,12 @@ fun HomeScreen(
 
         Spacer(modifier = Modifier.height(48.dp))
 
-        ActionCard("选择项目文件夹", "扫描整个项目目录，智能过滤并整合", Icons.Default.Folder, Color(0xFF5C8DF6)) { 
+        ActionCard("选择项目文件夹", "扫描整个项目目录，智能过滤并整合", Icons.Default.Folder, MaterialTheme.colorScheme.primary) { 
             folderLauncher.launch(null) 
         }
         Spacer(modifier = Modifier.height(16.dp))
-        ActionCard("选择单个文件", "快速整合单个或多个源码文件", Icons.Default.Description, Color(0xFF4A90E2)) { 
-            filesLauncher.launch(arrayOf("*/*")) 
+        ActionCard("选择零散文件", "忽略大小限制，不识别版本，不注入提示词", Icons.Default.Description, Color(0xFF7CB342)) { 
+            onNavigateToMultiFile() 
         }
 
         Spacer(modifier = Modifier.weight(1f))

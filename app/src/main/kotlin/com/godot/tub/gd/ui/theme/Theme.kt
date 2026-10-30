@@ -13,20 +13,26 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 
-val BluePrimary = Color(0xFF7C9EFF)
+// 亮色模式主色：深橄榄绿（保证在白底上的文字可读性）
+val LightGreenPrimary = Color(0xFF558B2F)
+// 暗色模式主色：亮黄绿（极具科技与活力感）
+val DarkGreenPrimary = Color(0xFFB2FF59)
+
 val DarkBg = Color(0xFF0F0F11)
 val DarkSurface = Color(0xFF1C1C1E)
 val LightBg = Color(0xFFF5F5F5)
 val LightSurface = Color(0xFFFFFFFF)
 
 private val DarkColorScheme = darkColorScheme(
-    primary = BluePrimary, background = DarkBg, surface = DarkSurface,
-    onPrimary = Color.White, onBackground = Color.White, onSurface = Color.White
+    primary = DarkGreenPrimary, background = DarkBg, surface = DarkSurface,
+    onPrimary = Color.Black, // 亮绿色背景上用黑色字
+    onBackground = Color.White, onSurface = Color.White
 )
 
 private val LightColorScheme = lightColorScheme(
-    primary = BluePrimary, background = LightBg, surface = LightSurface,
-    onPrimary = Color.White, onBackground = Color.Black, onSurface = Color.Black
+    primary = LightGreenPrimary, background = LightBg, surface = LightSurface,
+    onPrimary = Color.White, // 深绿色背景上用白色字
+    onBackground = Color.Black, onSurface = Color.Black
 )
 
 @Composable

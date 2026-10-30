@@ -9,6 +9,14 @@ import android.os.Environment
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.BackHandler
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.core.content.ContextCompat
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
@@ -25,6 +33,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.ViewModelProvider
 import com.godot.tub.gd.ui.screens.HomeScreen
 import com.godot.tub.gd.ui.screens.ResultScreen
+import com.godot.tub.gd.ui.screens.MultiFileScreen
 import com.godot.tub.gd.ui.screens.SettingsScreen
 import com.godot.tub.gd.ui.theme.AppTheme
 
@@ -38,12 +47,22 @@ class MainActivity : ComponentActivity() {
                 intent.data = Uri.parse("package:$packageName")
                 startActivity(intent)
             }
+        } else if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.Q) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE, Manifest.permission.READ_EXTERNAL_STORAGE), 100)
+            }
         }
 
         val viewModel = ViewModelProvider(this)[MainViewModel::class.java]
         viewModel.init(applicationContext)
         
         setContent {
+            val context = androidx.compose.ui.platform.LocalContext.current
+            androidx.compose.runtime.LaunchedEffect(Unit) {
+                viewModel.errorMessage.collect { msg ->
+                    android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
+                }
+            }
             val settings by viewModel.settings.collectAsState()
             val isSystemDark = isSystemInDarkTheme()
             val darkTheme = when(settings.themeMode) {
@@ -69,20 +88,15 @@ class MainActivity : ComponentActivity() {
                     val isLoading by viewModel.isLoading.collectAsState()
                     if (isLoading) {
                         Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background.copy(alpha = 0.7f)), contentAlignment = Alignment.Center) {
-                            CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                                Spacer(modifier = Modifier.height(16.dp))
+                                Text("正在扫描与合并，请稍候...", color = MaterialTheme.colorScheme.onBackground)
+                            }
                         }
                     }
 
-                    if (showVersionWarning) {
-                        AlertDialog(
-                            onDismissRequest = { showVersionWarning = false },
-                            title = { Text("配置检测提示") },
-                            text = { Text("未能准确识别出具体的 Godot 编辑器版本。建议先在 Godot 中打开项目并创建一个默认场景保存一次，以便生成完整的配置文件。\n\n提示词已自动调整为兼容模式，AI 将会通过阅读配置文件自行判断版本。") },
-                            confirmButton = {
-                                TextButton(onClick = { showVersionWarning = false }) { Text("知道了") }
-                            }
-                        )
-                    }
+                    
                 }
             }
         }
@@ -97,16 +111,40 @@ fun AppNavigation(viewModel: MainViewModel) {
     val historyList by viewModel.historyList.collectAsState()
     val context = LocalContext.current
 
+    BackHandler(enabled = screen != "home") {
+        if (screen == "settings") {
+            viewModel.currentScreen.value = viewModel.previousScreen
+        } else {
+            viewModel.currentScreen.value = "home"
+        }
+    }
+
     when (screen) {
         "home" -> HomeScreen(
             outputPath = settings.outputPath,
             format = settings.format,
             historyList = historyList,
             onFolderSelected = { uri -> viewModel.generateFromTreeUri(context, uri) },
-            onFilesSelected = { uris -> viewModel.generateFromMultipleFiles(context, uris) },
+            onNavigateToMultiFile = { viewModel.currentScreen.value = "multi_files" },
             onHistoryItemClick = { item -> viewModel.viewHistoryItem(item) },
             onClearHistory = { viewModel.clearHistory() },
-            onNavigateToSettings = { viewModel.currentScreen.value = "settings" }
+            onNavigateToSettings = { 
+                viewModel.previousScreen = "home"
+                viewModel.currentScreen.value = "settings" 
+            }
+        )
+        "multi_files" -> MultiFileScreen(
+            pendingFiles = viewModel.pendingMultiFiles.collectAsState().value,
+            settings = settings,
+            onAddFile = { viewModel.addPendingMultiFile(context, it) },
+            onRemoveFile = { viewModel.removePendingMultiFile(it) },
+            onClearAll = { viewModel.clearPendingMultiFiles() },
+            onStartMerge = { viewModel.startMultiFileMerge(context) },
+            onNavigateToSettings = { 
+                viewModel.previousScreen = "multi_files"
+                viewModel.currentScreen.value = "settings" 
+            },
+            onBack = { viewModel.currentScreen.value = "home" }
         )
         "settings" -> SettingsScreen(
             settings = settings,
