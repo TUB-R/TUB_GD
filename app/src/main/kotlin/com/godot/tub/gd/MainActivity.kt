@@ -156,7 +156,7 @@ fun AppNavigation(viewModel: MainViewModel) {
             onFolderSelected = { uri, ignorePrompt -> viewModel.generateFromTreeUri(context, uri, ignorePrompt) },
             onNavigateToMultiFile = { viewModel.currentScreen.value = "multi_files" },
             onHistoryItemClick = { item -> viewModel.viewHistoryItem(item) },
-            onClearHistory = { viewModel.clearHistory() },
+            onClearHistory = { callback -> viewModel.clearHistory(callback) },
             onNavigateToSettings = { 
                 viewModel.previousScreen = "home"
                 viewModel.currentScreen.value = "settings" 

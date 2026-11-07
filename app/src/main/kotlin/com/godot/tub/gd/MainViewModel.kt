@@ -53,7 +53,6 @@ class MainViewModel : ViewModel() {
     val isLoading = MutableStateFlow(false)
 
     val errorMessage = MutableSharedFlow<String>()
-    // 新增：用于控制权限修复弹窗的显示
     val showPermissionError = MutableSharedFlow<Unit>()
 
     fun init(context: Context) {
@@ -222,7 +221,6 @@ class MainViewModel : ViewModel() {
                 currentScreen.value = "result"
             } catch (e: Exception) {
                 e.printStackTrace()
-                // 触发权限修复弹窗，而不是只报错
                 showPermissionError.emit(Unit)
             }
         }
@@ -285,9 +283,34 @@ class MainViewModel : ViewModel() {
         }
     }
 
-    fun clearHistory() {
+    fun clearHistory(onResult: (String) -> Unit) {
+        val currentHistory = historyList.value
+        var deletedInternalCount = 0
+        
+        currentHistory.forEach { item ->
+            val isInternal = item.filePath.contains("Android/data") || item.filePath == "APP_INTERNAL_STORAGE"
+            
+            if (isInternal) {
+                try {
+                    val file = File(item.filePath, item.fileName)
+                    if (file.exists()) {
+                        file.delete()
+                    }
+                    deletedInternalCount++
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+        }
+        
         historyList.value = emptyList()
         if (historyFile.exists()) historyFile.delete()
+        
+        if (deletedInternalCount > 0) {
+            onResult("已清空历史，并同步清理了 $deletedInternalCount 个内部原文件")
+        } else {
+            onResult("历史记录已清空")
+        }
     }
 
     fun viewHistoryItem(item: ExportResult) {

@@ -41,7 +41,7 @@ fun HomeScreen(
     onFolderSelected: (Uri, Boolean) -> Unit,
     onNavigateToMultiFile: () -> Unit,
     onHistoryItemClick: (ExportResult) -> Unit,
-    onClearHistory: () -> Unit,
+    onClearHistory: ((String) -> Unit) -> Unit,
     onNavigateToSettings: () -> Unit
 ) {
     val context = LocalContext.current
@@ -91,10 +91,8 @@ fun HomeScreen(
             text = { Text("确定要清空所有历史记录吗？此操作不可恢复。") },
             confirmButton = {
                 TextButton(onClick = { 
-                    val clearCount = historyList.size
-                    onClearHistory()
-                    if (outputPath == "APP_INTERNAL_STORAGE" && clearCount > 0) {
-                        android.widget.Toast.makeText(context, "已同步清理 $clearCount 个内部原文件", android.widget.Toast.LENGTH_SHORT).show()
+                    onClearHistory { msg ->
+                        android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
                     }
                     showClearConfirmDialog = false
                     showHistoryDialog = false
