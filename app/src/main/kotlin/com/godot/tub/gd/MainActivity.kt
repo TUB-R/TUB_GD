@@ -1,4 +1,3 @@
-
 package com.godot.tub.gd
 
 import android.content.Intent
@@ -35,6 +34,7 @@ import com.godot.tub.gd.ui.screens.HomeScreen
 import com.godot.tub.gd.ui.screens.ResultScreen
 import com.godot.tub.gd.ui.screens.MultiFileScreen
 import com.godot.tub.gd.ui.screens.SettingsScreen
+import com.godot.tub.gd.ui.screens.PermissionFixScreen
 import com.godot.tub.gd.ui.theme.AppTheme
 
 class MainActivity : ComponentActivity() {
@@ -71,10 +71,35 @@ class MainActivity : ComponentActivity() {
                 else -> isSystemDark
             }
 
+            var showPermissionDialog by remember { mutableStateOf(false) }
+            
+            LaunchedEffect(Unit) {
+                viewModel.showPermissionError.collect {
+                    showPermissionDialog = true
+                }
+            }
+
+            if (showPermissionDialog) {
+                AlertDialog(
+                    onDismissRequest = { showPermissionDialog = false },
+                    title = { Text("创建文件失败") },
+                    text = { Text("写入文件时发生错误，可能是没有授予存储权限，或系统限制了写入操作。") },
+                    confirmButton = {
+                        TextButton(onClick = { showPermissionDialog = false }) { Text("确定") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = {
+                            showPermissionDialog = false
+                            viewModel.previousScreen = viewModel.currentScreen.value
+                            viewModel.currentScreen.value = "permission_fix"
+                        }) { Text("查看修复") }
+                    }
+                )
+            }
+
             var showVersionWarning by remember { mutableStateOf(false) }
             val result by viewModel.result.collectAsState()
             
-            // 检测到未知版本时触发弹窗
             LaunchedEffect(result) {
                 if (result != null && result?.godotVersion == "Unknown") {
                     showVersionWarning = true
@@ -95,8 +120,6 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     }
-
-                    
                 }
             }
         }
@@ -114,6 +137,8 @@ fun AppNavigation(viewModel: MainViewModel) {
     BackHandler(enabled = screen != "home") {
         if (screen == "settings") {
             viewModel.currentScreen.value = viewModel.previousScreen
+        } else if (screen == "permission_fix") {
+            viewModel.currentScreen.value = viewModel.previousScreen
         } else {
             viewModel.currentScreen.value = "home"
         }
@@ -123,8 +148,12 @@ fun AppNavigation(viewModel: MainViewModel) {
         "home" -> HomeScreen(
             outputPath = settings.outputPath,
             format = settings.format,
+            exportMode = settings.exportMode,
+            promptMode = settings.promptMode,
+            customPromptPath = settings.customPromptPath,
+            maxHistoryCount = settings.maxHistoryCount,
             historyList = historyList,
-            onFolderSelected = { uri -> viewModel.generateFromTreeUri(context, uri) },
+            onFolderSelected = { uri, ignorePrompt -> viewModel.generateFromTreeUri(context, uri, ignorePrompt) },
             onNavigateToMultiFile = { viewModel.currentScreen.value = "multi_files" },
             onHistoryItemClick = { item -> viewModel.viewHistoryItem(item) },
             onClearHistory = { viewModel.clearHistory() },
@@ -150,6 +179,14 @@ fun AppNavigation(viewModel: MainViewModel) {
             settings = settings,
             onUpdateSettings = { viewModel.updateSettings(it) },
             onBack = { viewModel.currentScreen.value = "home" }
+        )
+        "permission_fix" -> PermissionFixScreen(
+            onBack = { viewModel.currentScreen.value = viewModel.previousScreen },
+            onApplyInternal = {
+                viewModel.updateSettings { it.copy(outputPath = "APP_INTERNAL_STORAGE") }
+                viewModel.currentScreen.value = viewModel.previousScreen
+                android.widget.Toast.makeText(context, "已切换为应用内部存储", android.widget.Toast.LENGTH_SHORT).show()
+            }
         )
         "result" -> {
             if (result != null) {

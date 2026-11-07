@@ -1,6 +1,7 @@
-
 package com.godot.tub.gd.ui.screens
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.widget.Toast
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
@@ -12,6 +13,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -23,7 +25,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
@@ -37,6 +42,7 @@ import com.godot.tub.gd.AppSettings
 import com.godot.tub.gd.utils.SourceMergeUtils
 import kotlinx.coroutines.launch
 import java.util.Locale
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -53,9 +59,14 @@ fun SettingsScreen(
     var showAddRuleDialog by remember { mutableStateOf(false) }
     var showSummaryDialog by remember { mutableStateOf(false) }
     var showPromptDialog by remember { mutableStateOf(false) }
+    var showPromptPreviewDialog by remember { mutableStateOf(false) }
+    var previewPromptMode by remember { mutableStateOf("GENERAL") }
     var showDefaultRulesDialog by remember { mutableStateOf(false) }
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
     var ruleToDelete by remember { mutableStateOf<Pair<String, Boolean>?>(null) }
+
+    var showInvalidPromptPathDialog by remember { mutableStateOf(false) }
+    var invalidPathValue by remember { mutableStateOf("") }
     
     val scrollState = rememberScrollState()
 
@@ -71,10 +82,11 @@ fun SettingsScreen(
         ), label = "bounce"
     )
 
-        val promptModeColor = when (settings.promptMode) {
-        "GENERAL" -> Color(0xFF4CAF50) // 绿
-        "ADVANCED" -> Color(0xFFFFC107) // 黄
-        "TUB_STYLE" -> Color(0xFFF44336) // 红
+    val promptModeColor = when (settings.promptMode) {
+        "GENERAL" -> Color(0xFF4CAF50)
+        "ADVANCED" -> Color(0xFFFFC107)
+        "TUB_STYLE" -> Color(0xFFF44336)
+        "CUSTOM" -> Color(0xFF2196F3)
         else -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
     }
     
@@ -83,11 +95,43 @@ fun SettingsScreen(
         "GENERAL" -> "通用开发"
         "ADVANCED" -> "进阶开发"
         "TUB_STYLE" -> "TUB 同款"
+        "CUSTOM" -> "自定义提示词"
         else -> "未选择"
     }
 
-    // === 弹窗区 ===
+    val previewModeTitle = when (previewPromptMode) {
+        "NONE" -> "不注入"
+        "GENERAL" -> "通用开发"
+        "ADVANCED" -> "进阶开发"
+        "TUB_STYLE" -> "TUB 同款"
+        "CUSTOM" -> "自定义提示词"
+        else -> previewPromptMode
+    }
 
+    if (showInvalidPromptPathDialog) {
+        AlertDialog(
+            onDismissRequest = { showInvalidPromptPathDialog = false },
+            icon = { Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+            title = { Text("无效的文件路径") },
+            text = {
+                Column {
+                    Text("仅支持 .txt 或 .md 格式的提示词文件。", fontSize = 14.sp)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        "你输入的路径：\n$invalidPathValue",
+                        fontSize = 12.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("输入框已自动清空，请重新填写。", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showInvalidPromptPathDialog = false }) { Text("知道了") }
+            }
+        )
+    }
 
     if (showPathDialog) {
         AlertDialog(
@@ -149,8 +193,6 @@ fun SettingsScreen(
         )
     }
 
-
-
     if (showAddRuleDialog) {
         var extInput by remember { mutableStateOf("") }
         var isHardMode by remember { mutableStateOf(false) }
@@ -160,13 +202,15 @@ fun SettingsScreen(
             title = { Text("添加自定义过滤规则") },
             text = {
                 Column {
-                    Text("语法提示：\n• 文件夹请以 / 结尾，如 场景/ 或 .godot/\n• 支持中文及常规符号，不能包含空格或特殊字符", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
+                    Text("语法提示：\n• 文件夹请以 / 结尾，如 场景/ 或 .godot/\n• 支持中文及常规符号，不能包含空格或特殊字符\n• 支持换行批量输入，每行一条规则", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
                     Spacer(modifier = Modifier.height(12.dp))
                     OutlinedTextField(
                         value = extInput, 
-                        onValueChange = { extInput = it.trim() }, 
-                        placeholder = { Text("例如: build/ 或 .log") }, 
-                        singleLine = true,
+                        onValueChange = { extInput = it }, 
+                        placeholder = { Text("例如:\nbuild/\n.log\n场景/") }, 
+                        singleLine = false,
+                        minLines = 3,
+                        maxLines = 8,
                         modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(modifier = Modifier.height(16.dp))
@@ -191,38 +235,54 @@ fun SettingsScreen(
             },
             confirmButton = {
                 TextButton(onClick = {
-                    val rule = extInput.trim()
-                    if (rule.isNotEmpty()) {
+                    val lines = extInput.lines().map { it.trim() }.filter { it.isNotEmpty() }
+                    if (lines.isEmpty()) {
+                        showAddRuleDialog = false
+                        return@TextButton
+                    }
+
+                    val illegalChars = "\\:*?\"<>|"
+                    val existingHard = SourceMergeUtils.DEFAULT_HARD_DIRS + settings.hardExcludeRules
+                    val existingSoft = SourceMergeUtils.DEFAULT_SOFT_EXTS + settings.softExcludeRules
+
+                    val validRules = mutableListOf<String>()
+                    val skippedCount = intArrayOf(0)
+
+                    lines.forEach { rule ->
                         val isDirectory = rule.endsWith("/")
                         val cleanRule = if (isDirectory) rule.dropLast(1) else rule
-                        
-                        // 简化非法字符校验：直接用字符串包含，避开正则转义地狱
-                        val illegalChars = "\\:*?\"<>|"
-                        
-                        if (cleanRule.isEmpty()) {
-                            Toast.makeText(context, "规则不能仅为斜杠", Toast.LENGTH_SHORT).show()
-                        } else if (cleanRule.startsWith("/")) {
-                            Toast.makeText(context, "规则不能以斜杠开头", Toast.LENGTH_SHORT).show()
-                        } else if (cleanRule.any { it in illegalChars }) {
-                            Toast.makeText(context, "包含系统不支持的特殊字符", Toast.LENGTH_SHORT).show()
-                        } else if (cleanRule.contains(" ")) {
-                            Toast.makeText(context, "规则不能包含空格", Toast.LENGTH_SHORT).show()
-                        } else {
-                            val allHard = SourceMergeUtils.DEFAULT_HARD_DIRS + settings.hardExcludeRules
-                            val allSoft = SourceMergeUtils.DEFAULT_SOFT_EXTS + settings.softExcludeRules
-                            
-                            val existsInHard = if (isDirectory) allHard.any { it.removeSuffix("/") == cleanRule } else allHard.contains(cleanRule)
-                            val existsInSoft = if (isDirectory) allSoft.any { it.removeSuffix("/") == cleanRule } else allSoft.contains(cleanRule)
 
-                            if (existsInHard || existsInSoft) {
-                                Toast.makeText(context, "该规则已存在，无需重复添加", Toast.LENGTH_SHORT).show()
-                            } else {
-                                if (isHardMode) onUpdateSettings { it.copy(hardExcludeRules = it.hardExcludeRules + rule) }
-                                else onUpdateSettings { it.copy(softExcludeRules = it.softExcludeRules + rule) }
-                                showAddRuleDialog = false
+                        when {
+                            cleanRule.isEmpty() -> skippedCount[0]++
+                            cleanRule.startsWith("/") -> skippedCount[0]++
+                            cleanRule.any { it in illegalChars } -> skippedCount[0]++
+                            cleanRule.contains(" ") -> skippedCount[0]++
+                            else -> {
+                                val existsInHard = if (isDirectory) existingHard.any { it.removeSuffix("/") == cleanRule } else existingHard.contains(cleanRule)
+                                val existsInSoft = if (isDirectory) existingSoft.any { it.removeSuffix("/") == cleanRule } else existingSoft.contains(cleanRule)
+
+                                if (existsInHard || existsInSoft || validRules.contains(rule)) {
+                                    skippedCount[0]++
+                                } else {
+                                    validRules.add(rule)
+                                }
                             }
                         }
+                    }
+
+                    if (validRules.isEmpty()) {
+                        Toast.makeText(context, "没有可添加的有效规则", Toast.LENGTH_SHORT).show()
                     } else {
+                        if (isHardMode) {
+                            onUpdateSettings { it.copy(hardExcludeRules = it.hardExcludeRules + validRules) }
+                        } else {
+                            onUpdateSettings { it.copy(softExcludeRules = it.softExcludeRules + validRules) }
+                        }
+                        if (skippedCount[0] > 0) {
+                            Toast.makeText(context, "已添加 ${validRules.size} 条，跳过 ${skippedCount[0]} 条无效/重复规则", Toast.LENGTH_LONG).show()
+                        } else {
+                            Toast.makeText(context, "已添加 ${validRules.size} 条规则", Toast.LENGTH_SHORT).show()
+                        }
                         showAddRuleDialog = false
                     }
                 }) { Text("添加") }
@@ -236,20 +296,21 @@ fun SettingsScreen(
             PromptModeOption("NONE", "不注入", "最适合让 AI 直接阅读并分析项目结构，或你想完全自定义提示词时使用。", MaterialTheme.colorScheme.onSurface),
             PromptModeOption("GENERAL", "通用开发", "扩展性极高，仅注入基本语法标准，适合简单的问答和自由发挥。", Color(0xFF4CAF50)),
             PromptModeOption("ADVANCED", "进阶开发", "如同高级工程师全方位重构代码，并针对 3D 场景与物理深度优化。", Color(0xFFFFC107)),
-            PromptModeOption("TUB_STYLE", "TUB 同款", "在进阶基础上，强制 AI 生成 Python 一键构建脚本，效率翻三倍。", Color(0xFFF44336))
+            PromptModeOption("TUB_STYLE", "TUB 同款", "在进阶基础上，强制 AI 生成 Python 一键构建脚本，效率翻三倍。", Color(0xFFF44336)),
+            PromptModeOption("CUSTOM", "自定义提示词", "从本地 .txt / .md 文件读取内容，注入到文档末尾。", Color(0xFF2196F3))
         )
         AlertDialog(
             onDismissRequest = { showPromptDialog = false },
             title = { Text("选择 AI 提示词模式") },
             text = {
-                Column {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                     promptModes.forEach { option ->
                         val isSelected = (settings.promptMode == option.id)
                         Row(
                             modifier = Modifier.fillMaxWidth().selectable(selected = isSelected, onClick = {
                                 onUpdateSettings { it.copy(promptMode = option.id) }
                                 showPromptDialog = false
-                            }).padding(vertical = 10.dp, horizontal = 8.dp),
+                            }).padding(vertical = 8.dp, horizontal = 4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             RadioButton(
@@ -257,14 +318,33 @@ fun SettingsScreen(
                                 onClick = null,
                                 colors = RadioButtonDefaults.colors(selectedColor = option.color)
                             )
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Column {
-                                Text(
-                                    text = option.title, 
-                                    color = if (isSelected) option.color else MaterialTheme.colorScheme.onSurface, 
-                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                    fontSize = 15.sp
-                                )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = option.title, 
+                                        color = if (isSelected) option.color else MaterialTheme.colorScheme.onSurface, 
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                        fontSize = 15.sp
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Box(
+                                        modifier = Modifier
+                                            .size(24.dp)
+                                            .clickable {
+                                                previewPromptMode = option.id
+                                                showPromptPreviewDialog = true
+                                            },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            Icons.Default.Visibility,
+                                            contentDescription = "预览提示词",
+                                            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                }
                                 Text(
                                     text = option.desc,
                                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
@@ -281,7 +361,37 @@ fun SettingsScreen(
         )
     }
 
-    // === 主 UI ===
+    if (showPromptPreviewDialog) {
+        val previewText = remember(previewPromptMode, settings.customPromptPath, settings.reasoningLevel) {
+            SourceMergeUtils.buildPrompt(previewPromptMode, "4.x", context, settings.customPromptPath, settings.reasoningLevel)
+        }
+        AlertDialog(
+            onDismissRequest = { showPromptPreviewDialog = false },
+            title = { Text("提示词预览 · $previewModeTitle") },
+            text = {
+                SelectionContainer {
+                    Text(
+                        previewText,
+                        modifier = Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()),
+                        fontSize = 12.sp,
+                        fontFamily = FontFamily.Monospace,
+                        lineHeight = 18.sp
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("Prompt", previewText))
+                    Toast.makeText(context, "提示词已复制", Toast.LENGTH_SHORT).show()
+                }) { Text("复制") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPromptPreviewDialog = false }) { Text("返回") }
+            }
+        )
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -320,7 +430,10 @@ fun SettingsScreen(
                     Spacer(modifier = Modifier.width(16.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text("输出文件夹", color = MaterialTheme.colorScheme.onSurface)
-                        Text(settings.outputPath, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            if (settings.outputPath == "APP_INTERNAL_STORAGE") "应用内部处理" else settings.outputPath, 
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis
+                        )
                     }
                     IconButton(onClick = { 
                         onUpdateSettings { it.copy(outputPath = "/storage/emulated/0/Documents/") }
@@ -389,7 +502,70 @@ fun SettingsScreen(
                     }
                     Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface.copy(alpha=0.3f))
                 }
-                
+
+                if (settings.promptMode != "NONE") {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    SectionTitle("推理等级", Icons.Default.Psychology)
+                    LiquidReasoningSlider(
+                        selectedIndex = when(settings.reasoningLevel) { "LOW" -> 0; "HIGH" -> 1; "MAX" -> 2; else -> 1 },
+                        onSelected = { onUpdateSettings { s -> s.copy(reasoningLevel = when(it) { 0 -> "LOW"; 1 -> "HIGH"; else -> "MAX" }) } }
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = when(settings.reasoningLevel) {
+                            "LOW" -> "聚焦创意与玩法，代码直白，极速实现原型。"
+                            "HIGH" -> "引入 Godot 4.x 规范审查，确保信号安全、无内存泄漏。"
+                            else -> "开启对抗性测试，穷举边界条件，极致优化防崩坏。"
+                        },
+                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(start = 4.dp)
+                    )
+                }
+
+                if (settings.promptMode == "CUSTOM") {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    var customPathText by remember { mutableStateOf(settings.customPromptPath) }
+                    LaunchedEffect(settings.customPromptPath) { customPathText = settings.customPromptPath }
+                    OutlinedTextField(
+                        value = customPathText,
+                        onValueChange = { newText ->
+                            customPathText = newText.replace("\n", "").replace("\r", "")
+                        },
+                        label = { Text("提示词文件路径", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        placeholder = { Text("/storage/emulated/0/Documents/\nprompt.txt", maxLines = 2) },
+                        supportingText = { Text("仅支持 .txt 或 .md 文件", fontSize = 11.sp) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 84.dp, max = 100.dp)
+                            .onFocusChanged { focusState ->
+                                if (!focusState.isFocused) {
+                                    val path = customPathText.trim()
+                                    when {
+                                        path.isEmpty() -> {
+                                            if (settings.customPromptPath.isNotEmpty()) {
+                                                onUpdateSettings { it.copy(customPromptPath = "") }
+                                            }
+                                        }
+                                        !(path.lowercase().endsWith(".txt") || path.lowercase().endsWith(".md")) -> {
+                                            invalidPathValue = path
+                                            customPathText = ""
+                                            onUpdateSettings { it.copy(customPromptPath = "") }
+                                            showInvalidPromptPathDialog = true
+                                        }
+                                        path != settings.customPromptPath -> {
+                                            onUpdateSettings { it.copy(customPromptPath = path) }
+                                        }
+                                    }
+                                }
+                            },
+                        singleLine = false,
+                        minLines = 1,
+                        maxLines = 2,
+                        leadingIcon = { Icon(Icons.Default.Description, contentDescription = null) }
+                    )
+                }
+
                 Spacer(modifier = Modifier.height(16.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface, RoundedCornerShape(16.dp)).padding(16.dp),
@@ -406,22 +582,53 @@ fun SettingsScreen(
                     OutlinedTextField(
                         value = sizeText,
                         onValueChange = { 
-                            sizeText = it // 仅更新文本，不实时保存
+                            sizeText = it
                         },
                         modifier = Modifier.width(100.dp).onFocusChanged { focusState ->
                             if (!focusState.isFocused) {
-                                // 失去焦点时统一处理保存或重置
                                 val newVal = sizeText.toIntOrNull()
                                 if (newVal != null && newVal > 0) {
                                     onUpdateSettings { s -> s.copy(maxFileSizeKb = newVal) }
                                 } else {
-                                    // 如果清空或非法输入，重置为上次的设置值
                                     sizeText = settings.maxFileSizeKb.toString()
                                 }
                             }
                         }, 
                         singleLine = true, 
                         suffix = { Text("KB", fontSize = 12.sp) }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface, RoundedCornerShape(16.dp)).padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("历史储存数量", color = MaterialTheme.colorScheme.onBackground)
+                        Text("历史记录储存的数量修改超出储存会自动清理旧的", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f), fontSize = 12.sp)
+                    }
+                    var historyCountText by remember { mutableStateOf(settings.maxHistoryCount.toString()) }
+                    LaunchedEffect(settings.maxHistoryCount) { 
+                        historyCountText = settings.maxHistoryCount.toString() 
+                    }
+                    OutlinedTextField(
+                        value = historyCountText,
+                        onValueChange = { newVal ->
+                            historyCountText = newVal.filter { it.isDigit() }
+                        },
+                        modifier = Modifier.width(100.dp).onFocusChanged { focusState ->
+                            if (!focusState.isFocused) {
+                                val newVal = historyCountText.toIntOrNull()
+                                if (newVal != null && newVal > 0) {
+                                    onUpdateSettings { s -> s.copy(maxHistoryCount = newVal) }
+                                } else {
+                                    historyCountText = settings.maxHistoryCount.toString()
+                                }
+                            }
+                        }, 
+                        singleLine = true, 
+                        suffix = { Text("条", fontSize = 12.sp) }
                     )
                 }
             }
@@ -524,7 +731,7 @@ fun SettingsScreen(
                         }
                         Spacer(modifier = Modifier.height(16.dp))
                         Text("Godot整合工具", color = MaterialTheme.colorScheme.onSurface, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                        Text("v1.8.2", color = MaterialTheme.colorScheme.onSurface.copy(alpha=0.5f), fontSize = 12.sp)
+                        Text("v2.3.8", color = MaterialTheme.colorScheme.onSurface.copy(alpha=0.5f), fontSize = 12.sp)
                         Spacer(modifier = Modifier.height(16.dp))
                         HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha=0.1f))
                         Spacer(modifier = Modifier.height(16.dp))
@@ -544,6 +751,115 @@ fun SettingsScreen(
             ) {
                 Icon(imageVector = Icons.Default.KeyboardArrowDown, contentDescription = "滑动到底部", tint = Color.White, modifier = Modifier.size(32.dp))
             }
+        }
+    }
+}
+
+@Composable
+fun LiquidReasoningSlider(selectedIndex: Int, onSelected: (Int) -> Unit) {
+    val speedMillis = when (selectedIndex) {
+        0 -> 6000
+        1 -> 4000
+        else -> 2000
+    }
+
+    val gradientLength = 1200f
+
+    val infiniteTransition = rememberInfiniteTransition(label = "liquid")
+    val shift by infiniteTransition.animateFloat(
+        initialValue = 0f, targetValue = gradientLength,
+        animationSpec = infiniteRepeatable(
+            animation = tween(speedMillis, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ), label = "shift"
+    )
+
+    val targetFraction = selectedIndex / 2f
+    val animatedFraction by animateFloatAsState(
+        targetValue = targetFraction,
+        animationSpec = spring(dampingRatio = 0.7f, stiffness = Spring.StiffnessLow)
+    )
+
+    val activeColors = when (selectedIndex) {
+        0 -> listOf(Color(0xFF00E5FF), Color(0xFF00B0FF), Color(0xFF2979FF), Color(0xFF00B0FF), Color(0xFF00E5FF))
+        1 -> listOf(Color(0xFF2979FF), Color(0xFF651FFF), Color(0xFF7C4DFF), Color(0xFF651FFF), Color(0xFF2979FF))
+        else -> listOf(Color(0xFF00E5FF), Color(0xFF7C4DFF), Color(0xFFFF4081), Color(0xFF7C4DFF), Color(0xFF00E5FF))
+    }
+
+    val brush = Brush.linearGradient(
+        colors = activeColors,
+        start = Offset(shift, 0f),
+        end = Offset(shift + gradientLength, 0f),
+        tileMode = TileMode.Repeated
+    )
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Box(
+            modifier = Modifier.fillMaxWidth().height(48.dp),
+            contentAlignment = Alignment.CenterStart
+        ) {
+            Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp).height(18.dp)) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                            shape = RoundedCornerShape(10.dp)
+                        )
+                )
+                
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(animatedFraction)
+                        .fillMaxHeight()
+                        .background(
+                            brush = brush,
+                            shape = RoundedCornerShape(10.dp)
+                        )
+                )
+            }
+
+            Slider(
+                value = selectedIndex.toFloat(),
+                onValueChange = { 
+                    val newIndex = it.roundToInt().coerceIn(0, 2)
+                    if (newIndex != selectedIndex) onSelected(newIndex)
+                },
+                valueRange = 0f..2f,
+                steps = 1,
+                colors = SliderDefaults.colors(
+                    thumbColor = Color.White,
+                    activeTrackColor = Color.Transparent,
+                    inactiveTrackColor = Color.Transparent,
+                    activeTickColor = Color.Transparent,
+                    inactiveTickColor = Color.Transparent
+                ),
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+        
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 4.dp, start = 10.dp, end = 10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = "LOW",
+                fontSize = 12.sp,
+                fontWeight = if (selectedIndex == 0) FontWeight.Bold else FontWeight.Normal,
+                color = if (selectedIndex == 0) Color(0xFF00E5FF) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+            )
+            Text(
+                text = "HIGH",
+                fontSize = 12.sp,
+                fontWeight = if (selectedIndex == 1) FontWeight.Bold else FontWeight.Normal,
+                color = if (selectedIndex == 1) Color(0xFFFFC107) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+            )
+            Text(
+                text = "MAX",
+                fontSize = 12.sp,
+                fontWeight = if (selectedIndex == 2) FontWeight.Bold else FontWeight.Normal,
+                color = if (selectedIndex == 2) Color(0xFFFF4081) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+            )
         }
     }
 }

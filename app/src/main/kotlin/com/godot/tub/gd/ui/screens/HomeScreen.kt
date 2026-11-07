@@ -18,12 +18,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.godot.tub.gd.ExportResult
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -31,18 +33,55 @@ import java.util.*
 fun HomeScreen(
     outputPath: String,
     format: String,
+    exportMode: String,
+    promptMode: String,
+    customPromptPath: String,
+    maxHistoryCount: Int,
     historyList: List<ExportResult>,
-    onFolderSelected: (Uri) -> Unit,
+    onFolderSelected: (Uri, Boolean) -> Unit,
     onNavigateToMultiFile: () -> Unit,
     onHistoryItemClick: (ExportResult) -> Unit,
     onClearHistory: () -> Unit,
     onNavigateToSettings: () -> Unit
 ) {
+    val context = LocalContext.current
+
     var showHistoryDialog by remember { mutableStateOf(false) }
     var showClearConfirmDialog by remember { mutableStateOf(false) }
+    var showPromptWarningDialog by remember { mutableStateOf(false) }
+    var ignorePromptOnce by remember { mutableStateOf(false) }
 
     val folderLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
-        uri?.let { onFolderSelected(it) }
+        if (uri != null) {
+            onFolderSelected(uri, ignorePromptOnce)
+        }
+        ignorePromptOnce = false
+    }
+
+    if (showPromptWarningDialog) {
+        AlertDialog(
+            onDismissRequest = { showPromptWarningDialog = false },
+            icon = { Icon(Icons.Default.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+            title = { Text("提示词未设置") },
+            text = {
+                Text(
+                    "当前已选择「自定义提示词」模式，但提示词路径为空或文件无效。\n\n" +
+                    "本次扫描将自动跳过提示词注入（等效于「不注入」）。",
+                    fontSize = 14.sp,
+                    lineHeight = 20.sp
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showPromptWarningDialog = false
+                    ignorePromptOnce = true
+                    folderLauncher.launch(null)
+                }) { Text("继续（不注入）") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPromptWarningDialog = false }) { Text("取消") }
+            }
+        )
     }
 
     if (showClearConfirmDialog) {
@@ -52,7 +91,11 @@ fun HomeScreen(
             text = { Text("确定要清空所有历史记录吗？此操作不可恢复。") },
             confirmButton = {
                 TextButton(onClick = { 
+                    val clearCount = historyList.size
                     onClearHistory()
+                    if (outputPath == "APP_INTERNAL_STORAGE" && clearCount > 0) {
+                        android.widget.Toast.makeText(context, "已同步清理 $clearCount 个内部原文件", android.widget.Toast.LENGTH_SHORT).show()
+                    }
                     showClearConfirmDialog = false
                     showHistoryDialog = false
                 }) { Text("确定清空", color = MaterialTheme.colorScheme.error) }
@@ -64,7 +107,7 @@ fun HomeScreen(
     if (showHistoryDialog) {
         AlertDialog(
             onDismissRequest = { showHistoryDialog = false },
-            title = { Text("历史记录") },
+            title = { Text("历史记录 (${historyList.size}/${maxHistoryCount})") },
             text = {
                 if (historyList.isEmpty()) {
                     Text("暂无历史记录", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
@@ -123,8 +166,17 @@ fun HomeScreen(
 
         Spacer(modifier = Modifier.height(48.dp))
 
-        ActionCard("选择项目文件夹", "扫描整个项目目录，智能过滤并整合", Icons.Default.Folder, MaterialTheme.colorScheme.primary) { 
-            folderLauncher.launch(null) 
+        ActionCard("选择项目文件夹", "扫描整个项目目录，智能过滤并整合", Icons.Default.Folder, MaterialTheme.colorScheme.primary) {
+            val needsWarning = exportMode == "FULL_EXPORT" &&
+                promptMode == "CUSTOM" &&
+                !isCustomPromptValid(customPromptPath)
+            if (needsWarning) {
+                ignorePromptOnce = false
+                showPromptWarningDialog = true
+            } else {
+                ignorePromptOnce = false
+                folderLauncher.launch(null)
+            }
         }
         Spacer(modifier = Modifier.height(16.dp))
         ActionCard("选择零散文件", "忽略大小限制，不识别版本，不注入提示词", Icons.Default.Description, Color(0xFF7CB342)) { 
@@ -143,12 +195,27 @@ fun HomeScreen(
                 Spacer(modifier = Modifier.width(12.dp))
                 Column {
                     Text("导出至", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f), fontSize = 12.sp)
-                    Text(outputPath, color = MaterialTheme.colorScheme.onSurface, fontSize = 13.sp, lineHeight = 18.sp)
+                    Text(
+                        if (outputPath == "APP_INTERNAL_STORAGE") "应用内部处理" else outputPath, 
+                        color = MaterialTheme.colorScheme.onSurface, fontSize = 13.sp, lineHeight = 18.sp
+                    )
                 }
             }
             Box(modifier = Modifier.padding(start = 8.dp).background(MaterialTheme.colorScheme.primary.copy(alpha=0.2f), RoundedCornerShape(8.dp)).padding(horizontal = 10.dp, vertical = 4.dp)) {
                 Text(format, color = MaterialTheme.colorScheme.primary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
             }
         }
+    }
+}
+
+private fun isCustomPromptValid(path: String): Boolean {
+    if (path.isBlank()) return false
+    val lower = path.lowercase()
+    if (!(lower.endsWith(".txt") || lower.endsWith(".md"))) return false
+    return try {
+        val f = File(path)
+        f.exists() && f.isFile
+    } catch (_: Exception) {
+        false
     }
 }

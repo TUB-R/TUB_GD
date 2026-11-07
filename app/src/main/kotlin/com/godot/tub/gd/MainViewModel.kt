@@ -24,9 +24,12 @@ data class AppSettings(
     val format: String = "MARKDOWN",
     val exportMode: String = "DIR_ONLY",
     val promptMode: String = "GENERAL",
+    val reasoningLevel: String = "HIGH",
+    val customPromptPath: String = "",
     val softExcludeRules: Set<String> = emptySet(),
     val hardExcludeRules: Set<String> = emptySet(),
     val maxFileSizeKb: Int = 100,
+    val maxHistoryCount: Int = 10,
     val showGlobalFileSize: Boolean = true
 )
 
@@ -40,7 +43,7 @@ data class ExportResult(
 class MainViewModel : ViewModel() {
     private lateinit var prefs: SharedPreferences
     private lateinit var historyFile: File
-    
+
     val settings = MutableStateFlow(AppSettings())
     val currentScreen = MutableStateFlow("home")
     var previousScreen = "home"
@@ -48,20 +51,22 @@ class MainViewModel : ViewModel() {
     val historyList = MutableStateFlow<List<ExportResult>>(emptyList())
     val pendingMultiFiles = MutableStateFlow<List<SelectedFile>>(emptyList())
     val isLoading = MutableStateFlow(false)
-    
+
     val errorMessage = MutableSharedFlow<String>()
+    // 新增：用于控制权限修复弹窗的显示
+    val showPermissionError = MutableSharedFlow<Unit>()
 
     fun init(context: Context) {
         if (::prefs.isInitialized) return
         prefs = context.getSharedPreferences("TUB_GD_SETTINGS", Context.MODE_PRIVATE)
         historyFile = File(context.filesDir, "history.json")
-        
+
         val softStr = prefs.getString("softExcludeRules", "") ?: ""
         val softRules = if (softStr.isBlank()) emptySet() else softStr.split(",").toSet()
-        
+
         val hardStr = prefs.getString("hardExcludeRules", "") ?: ""
         val hardRules = if (hardStr.isBlank()) emptySet() else hardStr.split(",").toSet()
-        
+
         val savedPath = prefs.getString("outputPath", null)
         val finalPath = if (savedPath.isNullOrBlank()) "/storage/emulated/0/Documents/" else savedPath
 
@@ -70,16 +75,19 @@ class MainViewModel : ViewModel() {
             savedMode = "DIR_ONLY"
             prefs.edit().putString("exportMode", "DIR_ONLY").apply()
         }
-        
+
         settings.value = AppSettings(
             themeMode = prefs.getInt("themeMode", 0),
             outputPath = finalPath,
             format = prefs.getString("format", "MARKDOWN") ?: "MARKDOWN",
             exportMode = savedMode,
             promptMode = prefs.getString("promptMode", "GENERAL") ?: "GENERAL",
+            reasoningLevel = prefs.getString("reasoningLevel", "HIGH") ?: "HIGH",
+            customPromptPath = prefs.getString("customPromptPath", "") ?: "",
             softExcludeRules = softRules,
             hardExcludeRules = hardRules,
             maxFileSizeKb = prefs.getInt("maxFileSizeKb", 100),
+            maxHistoryCount = prefs.getInt("maxHistoryCount", 10),
             showGlobalFileSize = prefs.getBoolean("showGlobalFileSize", true)
         )
         loadHistory()
@@ -95,26 +103,32 @@ class MainViewModel : ViewModel() {
                 putString("format", newSettings.format)
                 putString("exportMode", newSettings.exportMode)
                 putString("promptMode", newSettings.promptMode)
+                putString("reasoningLevel", newSettings.reasoningLevel)
+                putString("customPromptPath", newSettings.customPromptPath)
                 putString("softExcludeRules", newSettings.softExcludeRules.joinToString(","))
                 putString("hardExcludeRules", newSettings.hardExcludeRules.joinToString(","))
                 putInt("maxFileSizeKb", newSettings.maxFileSizeKb)
+                putInt("maxHistoryCount", newSettings.maxHistoryCount)
                 putBoolean("showGlobalFileSize", newSettings.showGlobalFileSize)
                 apply()
             }
         }
     }
 
-    fun generateFromTreeUri(context: Context, uri: Uri) {
+    fun generateFromTreeUri(context: Context, uri: Uri, ignorePrompt: Boolean = false) {
         isLoading.value = true
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val cfg = settings.value
+                val effectivePromptMode = if (ignorePrompt) "NONE" else cfg.promptMode
                 val scanResult = SourceMergeUtils.scanDirectory(
-                    context, uri, cfg.format, cfg.exportMode, cfg.promptMode, cfg.softExcludeRules, cfg.hardExcludeRules, cfg.maxFileSizeKb, cfg.showGlobalFileSize
+                    context, uri, cfg.format, cfg.exportMode, effectivePromptMode, cfg.reasoningLevel,
+                    cfg.softExcludeRules, cfg.hardExcludeRules, cfg.maxFileSizeKb,
+                    cfg.showGlobalFileSize, cfg.customPromptPath
                 )
                 val rootDoc = DocumentFile.fromTreeUri(context, uri)
                 val folderName = rootDoc?.name ?: "Project"
-                saveResult(folderName, scanResult.content, scanResult.godotVersion)
+                saveResult(context, folderName, scanResult.content, scanResult.godotVersion)
             } catch (e: Exception) {
                 e.printStackTrace()
                 errorMessage.emit("扫描失败: ${e.message ?: "请检查是否授予了文件访问权限"}")
@@ -166,7 +180,7 @@ class MainViewModel : ViewModel() {
                 val scanResult = SourceMergeUtils.processMultipleFiles(
                     context, files, cfg.format, cfg.softExcludeRules, cfg.hardExcludeRules, cfg.maxFileSizeKb, cfg.showGlobalFileSize
                 )
-                saveResult("MultiFiles", scanResult.content, scanResult.godotVersion)
+                saveResult(context, "MultiFiles", scanResult.content, scanResult.godotVersion)
                 clearPendingMultiFiles()
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -177,19 +191,27 @@ class MainViewModel : ViewModel() {
         }
     }
 
-    private fun saveResult(baseName: String, text: String, godotVersion: String) {
+    private fun saveResult(context: Context, baseName: String, text: String, godotVersion: String) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val cfg = settings.value
-                val outDir = File(cfg.outputPath)
+                val pathStr = if (cfg.outputPath == "APP_INTERNAL_STORAGE") {
+                    context.getExternalFilesDir(null)?.absolutePath ?: context.filesDir.absolutePath
+                } else {
+                    cfg.outputPath
+                }
+                
+                val outDir = File(pathStr)
                 if (!outDir.exists()) {
                     val created = outDir.mkdirs()
-                    if (!created) throw Exception("无法创建输出目录，请检查存储权限")
+                    if (!created && !outDir.exists()) {
+                        throw Exception("无法创建输出目录")
+                    }
                 }
                 val ext = if (cfg.format == "MARKDOWN") "md" else cfg.format.lowercase()
                 val outFile = File(outDir, "${baseName}_source.$ext")
                 outFile.writeText(text)
-                
+
                 val newResult = ExportResult(
                     fileName = outFile.name, filePath = outDir.absolutePath,
                     charCount = text.length, tokenCount = text.length / 4,
@@ -200,7 +222,8 @@ class MainViewModel : ViewModel() {
                 currentScreen.value = "result"
             } catch (e: Exception) {
                 e.printStackTrace()
-                errorMessage.emit("保存文件失败: ${e.message ?: "请检查写入权限或存储空间"}")
+                // 触发权限修复弹窗，而不是只报错
+                showPermissionError.emit(Unit)
             }
         }
     }
@@ -210,9 +233,12 @@ class MainViewModel : ViewModel() {
             try {
                 val list = historyList.value.toMutableList()
                 list.add(0, item)
-                if (list.size > 20) list.removeAt(list.size - 1)
+                val maxHistory = settings.value.maxHistoryCount.coerceAtLeast(1)
+                while (list.size > maxHistory) {
+                    list.removeAt(list.size - 1)
+                }
                 historyList.value = list
-                
+
                 val jsonArray = JSONArray()
                 list.forEach {
                     val obj = JSONObject()
@@ -258,7 +284,7 @@ class MainViewModel : ViewModel() {
             e.printStackTrace()
         }
     }
-    
+
     fun clearHistory() {
         historyList.value = emptyList()
         if (historyFile.exists()) historyFile.delete()

@@ -5,6 +5,7 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.documentfile.provider.DocumentFile
 import com.godot.tub.gd.SelectedFile
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -38,8 +39,9 @@ object SourceMergeUtils {
     }
 
     fun scanDirectory(
-        context: Context, treeUri: Uri, outputFormat: String, exportMode: String, promptMode: String, 
-        softExcludes: Set<String>, hardExcludes: Set<String>, maxFileSizeKb: Int, showGlobalFileSize: Boolean
+        context: Context, treeUri: Uri, outputFormat: String, exportMode: String, promptMode: String, reasoningLevel: String,
+        softExcludes: Set<String>, hardExcludes: Set<String>, maxFileSizeKb: Int, showGlobalFileSize: Boolean,
+        customPromptPath: String = ""
     ): ScanResult {
         val rootDoc = DocumentFile.fromTreeUri(context, treeUri) ?: return ScanResult("无法读取该文件夹", "Unknown")
         
@@ -88,7 +90,7 @@ object SourceMergeUtils {
         }
         parseDir(rootDoc, rootNode)
 
-        val content = buildOutput(context, rootNode.name, rootNode, outputFormat, exportMode, promptMode, softExcludes, maxFileSizeKb, showGlobalFileSize, detectedVersion)
+        val content = buildOutput(context, rootNode.name, rootNode, outputFormat, exportMode, promptMode, reasoningLevel, softExcludes, maxFileSizeKb, showGlobalFileSize, detectedVersion, customPromptPath)
         return ScanResult(content, detectedVersion)
     }
 
@@ -210,8 +212,8 @@ object SourceMergeUtils {
 
     private fun buildOutput(
         context: Context, projectName: String, rootNode: FileNode, 
-        outputFormat: String, exportMode: String, promptMode: String, softExcludes: Set<String>, maxFileSizeKb: Int, showGlobalFileSize: Boolean,
-        godotVersion: String
+        outputFormat: String, exportMode: String, promptMode: String, reasoningLevel: String, softExcludes: Set<String>, maxFileSizeKb: Int, showGlobalFileSize: Boolean,
+        godotVersion: String, customPromptPath: String = ""
     ): String {
         val sb = StringBuilder()
         val date = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date())
@@ -309,7 +311,7 @@ object SourceMergeUtils {
             }
             
             if (exportMode == "FULL_EXPORT" && promptMode != "NONE") {
-                sb.append("  <prompt>\n    <![CDATA[\n").append(buildPrompt(promptMode, godotVersion)).append("\n]]>\n  </prompt>\n")
+                sb.append("  <prompt>\n    <![CDATA[\n").append(buildPrompt(promptMode, godotVersion, context, customPromptPath, reasoningLevel)).append("\n]]>\n  </prompt>\n")
             }
             sb.append("</project>")
             return sb.toString()
@@ -374,7 +376,7 @@ object SourceMergeUtils {
         }
 
         if (exportMode == "FULL_EXPORT" && promptMode != "NONE") {
-            val prompt = buildPrompt(promptMode, godotVersion)
+            val prompt = buildPrompt(promptMode, godotVersion, context, customPromptPath, reasoningLevel)
             if (isMd) sb.append(prompt)
             else sb.append(prompt.replace("##", "").replace("**", ""))
         }
@@ -434,8 +436,7 @@ object SourceMergeUtils {
         return count
     }
 
-        private fun getLang(ext: String): String = when (ext.lowercase()) {
-        // 常见编程语言
+    private fun getLang(ext: String): String = when (ext.lowercase()) {
         "kt", "kts" -> "kotlin"
         "java" -> "java"
         "py" -> "python"
@@ -455,14 +456,10 @@ object SourceMergeUtils {
         "lua" -> "lua"
         "dart" -> "dart"
         "r" -> "r"
-        
-        // 脚本与命令行
         "sh", "bash" -> "bash"
         "zsh" -> "zsh"
         "bat", "cmd" -> "bat"
         "ps1" -> "powershell"
-        
-        // 标记语言与样式
         "html", "htm" -> "html"
         "css" -> "css"
         "scss" -> "scss"
@@ -470,26 +467,50 @@ object SourceMergeUtils {
         "xml", "svg" -> "xml"
         "md", "markdown" -> "markdown"
         "txt" -> "text"
-        
-        // 数据与配置
         "json" -> "json"
         "yaml", "yml" -> "yaml"
         "toml" -> "toml"
         "ini", "cfg", "properties", "godot", "tscn", "tres", "import", "uid" -> "ini"
         "sql" -> "sql"
         "gradle" -> "groovy"
-        
-        // 着色器与图形
         "glsl", "frag", "vert", "gdshader" -> "glsl"
         "shader", "hlsl" -> "hlsl"
         "obj", "mtl" -> "wavefront"
-        
         else -> ""
     }
 
-    private fun buildPrompt(mode: String, version: String): String {
+    fun buildPrompt(mode: String, version: String, context: Context? = null, customPromptPath: String = "", reasoningLevel: String = "HIGH"): String {
         if (mode == "NONE") return ""
-        
+
+        if (mode == "CUSTOM") {
+            val sb = StringBuilder()
+            sb.append("---\n## 🎮 自定义提示词\n\n")
+            if (context != null && customPromptPath.isNotBlank()) {
+                try {
+                    val file = File(customPromptPath)
+                    val lowerName = file.name.lowercase()
+                    when {
+                        !file.exists() || !file.isFile -> {
+                            sb.append("> **[自定义提示词加载失败]** 文件不存在：$customPromptPath")
+                        }
+                        !(lowerName.endsWith(".txt") || lowerName.endsWith(".md")) -> {
+                            sb.append("> **[自定义提示词加载失败]** 仅支持 .txt 或 .md 格式：$customPromptPath")
+                        }
+                        else -> {
+                            sb.append(file.readText())
+                        }
+                    }
+                } catch (e: Exception) {
+                    sb.append("> **[自定义提示词加载失败]** ${e.message}")
+                }
+            } else {
+                sb.append("> **[未设置自定义提示词]** 请在设置中选择自定义提示词并填写文件路径。")
+            }
+            
+            appendReasoningLevel(sb, reasoningLevel)
+            return sb.toString()
+        }
+
         val v = version.toFloatOrNull() ?: 4.0f
         val sb = StringBuilder()
         
@@ -497,8 +518,8 @@ object SourceMergeUtils {
         sb.append("### 身份与背景\n")
         sb.append("你是一个资深的 Godot $version 游戏开发者。当前上下文包含了一个完整的 Godot $version 游戏项目源码。\n\n")
         
-        // 通用规则：所有模式都会携带
         sb.append("### Godot $version 技术红线\n")
+        sb.append("- **缩进**：GDScript 官方规范使用 Tab（`\\t`），严禁 2/4 空格混用；Tab/空格不一致是工具修改失败的头号原因。\n")
         sb.append("- 跨文件引用资源请使用 `res://` 路径，严禁使用绝对路径。\n")
         sb.append("- 请严格使用 GDScript 和 Godot 4.x 的 API。\n")
         sb.append("- 严禁使用 Godot 3 的旧版 API（如 `KinematicBody`、`instance()` 等）。\n")
@@ -517,7 +538,6 @@ object SourceMergeUtils {
         }
         sb.append("\n")
 
-        // 进阶模式：加入 3D 场景理解和开发规范
         if (mode == "ADVANCED" || mode == "TUB_STYLE") {
             sb.append("### 进阶开发指南（必读）\n")
             sb.append("1. **场景理解**：请仔细阅读上下文中的 `.tscn` 文件，理解节点树（Node Tree）结构。明确各个节点（Camera3D, CharacterBody3D, Marker3D, UI 等）的层级和父子关系。\n")
@@ -527,24 +547,149 @@ object SourceMergeUtils {
             sb.append("5. **面向对象设计**：善用 `signal`（信号）解耦节点，避免硬编码强引用（如 `get_node(\"../../Player\")`），推荐使用分组 `get_tree().get_nodes_in_group(\"player_team\")`。\n\n")
         }
 
-        // TUB 同款：强制输出 Python 脚本，并给出严格的防翻车规范
-        if (mode == "TUB_STYLE") {
-            sb.append("### TUB 自动化工作流（极高优先级）\n")
-            sb.append("为了批量修改项目文件，**你必须输出一个可以直接在项目根目录运行的纯 Python 脚本**（例如 `patch.py`）。\n")
-            sb.append("该脚本的核心要求如下（请严格遵守，否则极易引发语法崩溃）：\n")
-            sb.append("1. **路径处理**：使用 `pathlib.Path`，不要混用绝对路径，基于当前脚本所在目录（`root = Path(__file__).resolve().parent`）。\n")
-            sb.append("2. **编码格式**：写入文件时，**必须**指定 `encoding=\"utf-8\"` 和 `newline=\"\\n\"`（防止 Windows 换行符污染 GDScript）。\n")
-            sb.append("3. **修改策略**：\n")
-            sb.append("   - 如果是**新增文件**，直接写入即可。\n")
-            sb.append("   - 如果是**覆盖文件**，请直接将完整的修改后代码写入，**避免**让用户去跑什么 `replace` 匹配，这样极易导致代码残缺。\n")
-            sb.append("   - 如果是**精准替换**，请使用 Python 的 raw string (`r\"\"\"...\"\"\"`) 包裹原代码和新代码，**绝对不要**让特殊符号（如 `\\n`, `\\t`, `\"`）在 Python 和 GDScript 之间发生转义冲突！\n")
-            sb.append("4. **代码风格**：脚本里被修改或新增的 GDScript 代码，请严格遵守 Godot 4.x 规范，缩进请使用 Tab 或 4 个空格，并保持格式一致。\n")
-            sb.append("5. **避免覆盖 `.uid` 或 `unique_id`**：保持这些标识符不变。\n\n")
+        if (mode == "GENERAL" || mode == "ADVANCED") {
+            sb.append("### 代码输出规范（极重要）\n")
+            sb.append("当你直接输出代码时，请务必使用 **Tab 缩进**，严禁使用 2 个或 4 个空格。若你需要给出完整的 `.gd` 文件代码，请直接输出包含 Tab 格式的完整代码块，不要使用 `replace()` 或 `diff` 语法，以免用户复制粘贴后出现缩进错乱。\n\n")
         }
+
+        if (mode == "TUB_STYLE") {
+            sb.append("### TUB 自动化工作流（极高优先级）\n\n")
+            sb.append("**核心目标：输出一个可直接在 Godot 项目根目录运行的纯 Python 脚本（默认文件名 `patch.py`），完成对 .gd 文件的可靠修改。宁可整文件重写，也不要用不可靠的局部替换。**\n\n")
+            
+            sb.append("#### 一、读写铁律（违反任何一条都会导致项目损坏或引擎报错）\n\n")
+            sb.append("1. **必须使用 `pathlib.Path`**，基于脚本自身定位项目根：\n")
+            sb.append("   `ROOT = Path(__file__).resolve().parent`\n")
+            sb.append("2. **【绝对禁止】直接使用 `p.write_text()` 覆写原文件！**\n")
+            sb.append("   Godot 有文件监视器，直接截断覆写会导致它读到半截代码，从而报“与缓存不匹配”的致命错误。\n")
+            sb.append("3. **必须使用“安全原子写入（Safe Save）”策略**：先写临时文件，再原子重命名替换原文件。这能保证 Godot 读到的永远是完整文件，从而正常弹出“文件已修改”提示，而不是崩溃。请直接复制下面这个安全写入函数：\n\n")
+            sb.append("```python\n")
+            sb.append("def safe_write(rel_path: str, content: str) -> None:\n")
+            sb.append("    p = ROOT / rel_path\n")
+            sb.append("    p.parent.mkdir(parents=True, exist_ok=True)\n")
+            sb.append("    # 先写入临时文件\n")
+            sb.append("    tmp = p.with_suffix(p.suffix + \".tmp\")\n")
+            sb.append("    tmp.write_text(content, encoding=\"utf-8\", newline=\"\\n\")\n")
+            sb.append("    # 再原子重命名替换，避免 Godot 读到一半\n")
+            sb.append("    tmp.replace(p)\n")
+            sb.append("```\n\n")
+            sb.append("4. **GDScript 缩进必须是 Tab（`\\t`），严禁空格**。你在 Python 里拼装 GDScript 字符串时，每一级缩进都用 `\\t`，绝对不要用 2 个或 4 个空格。\n\n")
+            
+            sb.append("#### 二、修改策略（按可靠性从高到低）\n\n")
+            sb.append("**策略 A（首选）：整文件覆盖**\n")
+            sb.append("只要目标文件 ≤ 400 行，或你对函数边界没有 100% 把握，就直接输出完整的新文件内容，用 `safe_write()` 覆写。整文件覆盖最可靠，不存在匹配失败的问题。**本项目优先策略 A。**\n\n")
+            sb.append("**策略 B（次选）：函数级替换**\n")
+            sb.append("仅在满足全部条件时使用：\n")
+            sb.append("- 单文件 > 400 行\n")
+            sb.append("- 你能准确说出要修改的函数名\n\n")
+            sb.append("**禁止用 `str.replace` 或 `re.sub` 匹配多行 GDScript 代码**。请使用下面的 `replace_function()`：它通过 Tab 缩进扫描定位函数边界，能正确处理嵌套的 if/for/match，不受代码内容影响。\n\n")
+            
+            sb.append("```python\n")
+            sb.append("def replace_function(source: str, func_name: str, new_func_src: str) -> str:\n")
+            sb.append("    # 通过缩进扫描替换 GDScript 函数。new_func_src 是含缩进的完整函数源码。\n")
+            sb.append("    lines = source.split(\"\\n\")\n")
+            sb.append("    start = None\n")
+            sb.append("    base_indent = 0\n")
+            sb.append("    for i, line in enumerate(lines):\n")
+            sb.append("        stripped = line.lstrip(\"\\t\")\n")
+            sb.append("        if stripped.startswith(f\"func {func_name}(\"):\n")
+            sb.append("            start = i\n")
+            sb.append("            base_indent = len(line) - len(stripped)\n")
+            sb.append("            break\n")
+            sb.append("    if start is None:\n")
+            sb.append("        raise ValueError(f\"未找到函数: {func_name}\")\n")
+            sb.append("    end = len(lines)\n")
+            sb.append("    for i in range(start + 1, len(lines)):\n")
+            sb.append("        line = lines[i]\n")
+            sb.append("        if not line.strip():\n")
+            sb.append("            continue\n")
+            sb.append("        cur = len(line) - len(line.lstrip(\"\\t\"))\n")
+            sb.append("        if cur <= base_indent:\n")
+            sb.append("            end = i\n")
+            sb.append("            break\n")
+            sb.append("    new_lines = new_func_src.rstrip(\"\\n\").split(\"\\n\")\n")
+            sb.append("    return \"\\n\".join(lines[:start] + new_lines + lines[end:])\n")
+            sb.append("```\n\n")
+            
+            sb.append("#### 三、禁用清单（踩中任何一条都会导致修改失败或项目损坏）\n\n")
+            sb.append("- ❌ 禁止 `p.write_text()` 原地覆写（会触发引擎缓存报错）\n")
+            sb.append("- ❌ 禁止 `content.replace(\"多行代码\", \"...\")` 做多行替换（Tab / 空格 / 引号一处不一致就失败）\n")
+            sb.append("- ❌ 禁止 `re.sub` 匹配多行 GDScript（缩进不能用正则可靠匹配）\n")
+            sb.append("- ❌ 禁止用 `writelines` 且不指定 newline（会写入 `\\r\\n`）\n")
+            sb.append("- ❌ 禁止修改 `.uid` / `.import` / `.godot` 内部文件\n")
+            sb.append("- ❌ 禁止修改 `.tscn` 里的 `unique_id`（编辑器维护）\n\n")
+            
+            sb.append("#### 四、脚本模板（请直接复制使用）\n\n")
+            sb.append("```python\n")
+            sb.append("#!/usr/bin/env python3\n")
+            sb.append("# -*- coding: utf-8 -*-\n")
+            sb.append("from pathlib import Path\n\n")
+            sb.append("ROOT = Path(__file__).resolve().parent\n\n\n")
+            sb.append("def safe_write(rel_path: str, content: str) -> None:\n")
+            sb.append("    p = ROOT / rel_path\n")
+            sb.append("    p.parent.mkdir(parents=True, exist_ok=True)\n")
+            sb.append("    tmp = p.with_suffix(p.suffix + \".tmp\")\n")
+            sb.append("    tmp.write_text(content, encoding=\"utf-8\", newline=\"\\n\")\n")
+            sb.append("    tmp.replace(p)\n\n\n")
+            sb.append("def replace_function(source: str, func_name: str, new_func_src: str) -> str:\n")
+            sb.append("    # 粘贴上面的实现\n")
+            sb.append("    ...\n\n\n")
+            sb.append("def patch_function(rel_path: str, func_name: str, new_func_src: str) -> None:\n")
+            sb.append("    p = ROOT / rel_path\n")
+            sb.append("    src = p.read_text(encoding=\"utf-8\")\n")
+            sb.append("    new_src = replace_function(src, func_name, new_func_src)\n")
+            sb.append("    safe_write(rel_path, new_src)\n\n\n")
+            sb.append("if __name__ == \"__main__\":\n")
+            sb.append("    # 策略 A：整文件覆盖（推荐）\n")
+            sb.append("    safe_write(\"scripts/player.gd\", PLAYER_GD_SOURCE)\n\n")
+            sb.append("    # 策略 B：函数级替换（仅大文件用）\n")
+            sb.append("    # patch_function(\"scripts/player.gd\", \"_physics_process\", NEW_PHYSICS_PROCESS)\n")
+            sb.append("```\n\n")
+            
+            sb.append("#### 五、生成脚本后的自检清单\n\n")
+            sb.append("在输出末尾附上以下 Markdown 检查清单，逐项确认后再交付：\n\n")
+            sb.append("- [ ] 使用了 `safe_write()` 安全覆写，而不是直接覆盖\n")
+            sb.append("- [ ] 每级缩进都是 Tab，没有空格混入\n")
+            sb.append("- [ ] 读/写文件都指定了 `encoding=\"utf-8\"` 和 `newline=\"\\n\"`\n")
+            sb.append("- [ ] 明确说明用了「整文件覆盖」还是「函数级替换」，并给出理由\n")
+            sb.append("- [ ] 没有触碰 `.uid` / `.import` / `.tscn` 的 `unique_id`\n\n")
+        }
+
+        appendReasoningLevel(sb, reasoningLevel)
 
         sb.append("### 用户需求\n")
         sb.append("请仔细阅读上述项目结构及代码，等待用户的具体游戏开发需求。\n")
         
         return sb.toString()
+    }
+
+    private fun appendReasoningLevel(sb: StringBuilder, level: String) {
+        when (level) {
+            "LOW" -> {
+                sb.append("### 🧠 推理等级：LOW (极速原型)\n")
+                sb.append("- **思考方向**：将重点完全放在“玩法实现”与“快速验证”上，不需要考虑复杂的工程化和极端情况。\n")
+                sb.append("- **实现要求**：\n")
+                sb.append("  1. 提供最直接、最短小精悍的代码，优先让功能立刻跑起来。\n")
+                sb.append("  2. 忽略冗余的防御性检查，假定输入和状态都是符合预期的。\n")
+                sb.append("  3. 不需要刻意优化性能，以“能跑”为最高准则。\n\n")
+            }
+            "HIGH" -> {
+                sb.append("### 🧠 推理等级：HIGH (工程级标准)\n")
+                sb.append("- **思考方向**：注重代码工程化与 Godot 引擎规范，保证代码的可读性、可维护性与健壮性。\n")
+                sb.append("- **实现要求**：\n")
+                sb.append("  1. **严格使用 Godot 4.x API**：杜绝使用任何已废弃的方法。\n")
+                sb.append("  2. **生命周期与安全**：精确处理 `_ready`、`_process` 等节点生命周期；确保信号（Signal）连接安全、无内存泄漏。\n")
+                sb.append("  3. **类型安全**：变量定义必须包含类型提示（Type Hint），函数参数与返回值也要明确类型。\n")
+                sb.append("  4. **结构清晰**：代码需分段、有注释，变量命名符合驼峰/下划线规范。\n\n")
+            }
+            "MAX" -> {
+                sb.append("### 🧠 推理等级：MAX (极致防御与优化)\n")
+                sb.append("- **思考方向**：将代码视为要直接上线的商业级项目，启动“对抗性测试”与“性能压榨”思维。\n")
+                sb.append("- **实现要求**：\n")
+                sb.append("  1. **极端的边界防御**：必须在代码中处理空值（null）、数组越界、快速连点、状态冲突等所有可能引发崩溃的隐患。\n")
+                sb.append("  2. **性能瓶颈检查**：确保 `_process` 或 `_physics_process` 中没有高开销的遍历或实例化操作；涉及大量计算时，必须给出优化方案。\n")
+                sb.append("  3. **内部自我审查**：在输出代码前，必须在内部进行逻辑推演（左右互搏），确认没有逻辑死锁、死循环或内存泄漏。\n")
+                sb.append("  4. **高内聚低耦合**：代码必须极其模块化，方便后续无限扩展。\n\n")
+            }
+        }
     }
 }
