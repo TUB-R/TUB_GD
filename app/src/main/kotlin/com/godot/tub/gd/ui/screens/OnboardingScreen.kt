@@ -147,7 +147,7 @@ fun OnboardingScreen(
         }
         Spacer(modifier = Modifier.height(16.dp))
         Text(
-            "欢迎使用 Godot整合工具",
+            "欢迎使用 TUB_Code",
             fontSize = 22.sp,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onBackground
