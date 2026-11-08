@@ -1,4 +1,4 @@
-package com.godot.tub.gd.ui.screens
+package com.tub.code.md.ui.screens
 
 import android.content.Context
 import android.content.Intent

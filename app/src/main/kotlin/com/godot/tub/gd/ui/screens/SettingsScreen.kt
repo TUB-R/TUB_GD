@@ -1,8 +1,10 @@
-package com.godot.tub.gd.ui.screens
+package com.tub.code.md.ui.screens
 
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -17,6 +19,8 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material3.*
 import androidx.compose.material3.RadioButtonDefaults
@@ -38,8 +42,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.godot.tub.gd.AppSettings
-import com.godot.tub.gd.utils.SourceMergeUtils
+import com.tub.code.md.AppSettings
+import com.tub.code.md.MainViewModel
+import com.tub.code.md.ImportResult
+import com.tub.code.md.CustomPrompt
+import com.tub.code.md.utils.SourceMergeUtils
 import kotlinx.coroutines.launch
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -49,12 +56,47 @@ import kotlin.math.roundToInt
 fun SettingsScreen(
     settings: AppSettings,
     onUpdateSettings: ((AppSettings) -> AppSettings) -> Unit,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onExportConfig: (android.net.Uri, (String) -> Unit) -> Unit = { _, _ -> },
+    onImportConfig: (android.net.Uri, (ImportResult) -> Unit) -> Unit = { _, _ -> },
+    onAddCustomPrompt: (String, String) -> Unit = { _, _ -> },
+    onRemoveCustomPrompt: (String) -> Unit = {},
+    onSelectCustomPrompt: (String) -> Unit = {},
+    onCancelImport: () -> Unit = {},
+    onUpdateCustomPrompt: (String, String, String) -> Unit = { _, _, _ -> }
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     val scope = rememberCoroutineScope()
-    
+
+    var showAddPromptDialog by remember { mutableStateOf(false) }
+    var promptToDelete by remember { mutableStateOf<CustomPrompt?>(null) }
+    var previewCustomPromptId by remember { mutableStateOf<String?>(null) }
+    var editingPrompt by remember { mutableStateOf<CustomPrompt?>(null) }
+    var showEditPromptDialog by remember { mutableStateOf(false) }
+    var pendingImportResult by remember { mutableStateOf<ImportResult?>(null) }
+    var showAndroidEnableDialog by remember { mutableStateOf(false) }
+    var showAndroidDisableDialog by remember { mutableStateOf(false) }
+
+    val exportConfigLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri != null) {
+            onExportConfig(uri) { msg ->
+                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+    val importConfigLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            onImportConfig(uri) { result ->
+                pendingImportResult = result
+            }
+        }
+    }
+
     var showPathDialog by remember { mutableStateOf(false) }
     var showAddRuleDialog by remember { mutableStateOf(false) }
     var showSummaryDialog by remember { mutableStateOf(false) }
@@ -85,7 +127,9 @@ fun SettingsScreen(
     val promptModeColor = when (settings.promptMode) {
         "GENERAL" -> Color(0xFF4CAF50)
         "ADVANCED" -> Color(0xFFFFC107)
-        "TUB_STYLE" -> Color(0xFFF44336)
+        "TUB_GD" -> Color(0xFFF44336)
+        "TUB_APP" -> Color(0xFF9C27B0)
+        "TUB_PY" -> Color(0xFF009688)
         "CUSTOM" -> Color(0xFF2196F3)
         else -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
     }
@@ -94,7 +138,9 @@ fun SettingsScreen(
         "NONE" -> "不注入（纯净模式）"
         "GENERAL" -> "通用开发"
         "ADVANCED" -> "进阶开发"
-        "TUB_STYLE" -> "TUB 同款"
+        "TUB_GD" -> "TUB_GD"
+        "TUB_APP" -> "TUB_APP"
+        "TUB_PY" -> "TUB_PY"
         "CUSTOM" -> "自定义提示词"
         else -> "未选择"
     }
@@ -103,9 +149,139 @@ fun SettingsScreen(
         "NONE" -> "不注入"
         "GENERAL" -> "通用开发"
         "ADVANCED" -> "进阶开发"
-        "TUB_STYLE" -> "TUB 同款"
+        "TUB_GD" -> "TUB_GD"
+        "TUB_APP" -> "TUB_APP"
+        "TUB_PY" -> "TUB_PY"
         "CUSTOM" -> "自定义提示词"
         else -> previewPromptMode
+    }
+
+    if (pendingImportResult != null) {
+        val r = pendingImportResult!!
+                val allGood = r.failedItems.isEmpty() && r.versionMatch
+        AlertDialog(
+            onDismissRequest = { /* 强制二选一 */ },
+            icon = {
+                Icon(
+                    if (allGood) Icons.Default.CheckCircle else Icons.Default.Warning,
+                    contentDescription = null,
+                    tint = when {
+                        allGood -> Color(0xFF4CAF50)
+                        !r.versionMatch -> Color(0xFFFF9800)
+                        else -> MaterialTheme.colorScheme.error
+                    }
+                )
+            },
+            title = { Text("导入成功 [${r.successCount}/${r.totalCount}]") },
+            text = {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    // 版本状态
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            if (r.versionMatch) Icons.Default.CheckCircle else Icons.Default.Warning,
+                            contentDescription = null,
+                            tint = if (r.versionMatch) Color(0xFF4CAF50) else Color(0xFFFF9800),
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            if (r.versionMatch) "版本匹配：v${r.currentVersion}"
+                            else "版本不匹配：配置 v${r.configVersion} · 当前 v${r.currentVersion}",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            lineHeight = 17.sp,
+                            color = if (r.versionMatch) Color(0xFF4CAF50) else Color(0xFFE65100)
+                        )
+                    }
+
+                    // 未知属性警告
+                    if (r.warningItems.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        r.warningItems.forEach { item ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(Color(0xFFFF9800).copy(alpha = 0.1f), RoundedCornerShape(6.dp))
+                                    .padding(8.dp),
+                                verticalAlignment = Alignment.Top
+                            ) {
+                                Icon(
+                                    Icons.Default.Warning,
+                                    contentDescription = null,
+                                    tint = Color(0xFFFF9800),
+                                    modifier = Modifier.size(15.dp).padding(top = 1.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    item,
+                                    fontSize = 12.sp,
+                                    lineHeight = 17.sp,
+                                    color = Color(0xFFE65100)
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                        }
+                    }
+
+                    if (r.failedItems.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        r.failedItems.forEach { item ->
+                            Row(verticalAlignment = Alignment.Top) {
+                                Icon(
+                                    Icons.Default.Cancel,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.size(15.dp).padding(top = 2.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    "失败 $item",
+                                    fontSize = 12.sp,
+                                    lineHeight = 17.sp,
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                        }
+                    }
+
+                    // 完全失败提示
+                    if (r.successItems.isEmpty() && r.failedItems.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            "没有任何内容成功解析，建议撤销并重新选择配置文件。",
+                            fontSize = 12.sp,
+                            lineHeight = 17.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                        )
+                    }
+
+                    if (!allGood) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            "如不满意，可撤销回到导入前的状态。",
+                            fontSize = 12.sp,
+                            lineHeight = 17.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f)
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingImportResult = null
+                }) { Text("保留") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    onCancelImport()
+                    pendingImportResult = null
+                    Toast.makeText(context, "已回滚到导入前状态", Toast.LENGTH_SHORT).show()
+                }) { Text("撤销", color = MaterialTheme.colorScheme.error) }
+            }
+        )
     }
 
     if (showInvalidPromptPathDialog) {
@@ -190,6 +366,142 @@ fun SettingsScreen(
                 }
             },
             confirmButton = { TextButton(onClick = { showDefaultRulesDialog = false }) { Text("我知道了") } }
+        )
+    }
+
+    if (showAddPromptDialog) {
+        var newTitle by remember { mutableStateOf("") }
+        var newContent by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showAddPromptDialog = false },
+            title = { Text("添加提示词") },
+            text = {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    OutlinedTextField(
+                        value = newTitle,
+                        onValueChange = { newTitle = it },
+                        label = { Text("标题") },
+                        placeholder = { Text("例如：我的 Godot 开发规范") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = newContent,
+                        onValueChange = { newContent = it },
+                        label = { Text("提示词内容") },
+                        placeholder = { Text("在这里粘贴或输入提示词内容...") },
+                        minLines = 8,
+                        maxLines = 15,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        "添加后会出现在提示词列表末尾，带「自定义」标签，可随时删除。",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (newContent.isBlank()) {
+                            Toast.makeText(context, "提示词内容不能为空", Toast.LENGTH_SHORT).show()
+                        } else {
+                            onAddCustomPrompt(newTitle, newContent)
+                            Toast.makeText(context, "已添加提示词", Toast.LENGTH_SHORT).show()
+                            showAddPromptDialog = false
+                        }
+                    }
+                ) { Text("确定") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAddPromptDialog = false }) { Text("取消") }
+            }
+        )
+    }
+
+    if (promptToDelete != null) {
+        val target = promptToDelete!!
+        AlertDialog(
+            onDismissRequest = { promptToDelete = null },
+            title = { Text("删除提示词") },
+            text = { Text("确定删除「${target.title}」吗？此操作不可恢复。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    onRemoveCustomPrompt(target.id)
+                    promptToDelete = null
+                    Toast.makeText(context, "已删除", Toast.LENGTH_SHORT).show()
+                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { promptToDelete = null }) { Text("取消") }
+            }
+        )
+    }
+
+    if (showEditPromptDialog && editingPrompt != null) {
+        val editing = editingPrompt!!
+        var editTitle by remember(editing.id) { mutableStateOf(editing.title) }
+        var editContent by remember(editing.id) { mutableStateOf(editing.content) }
+        AlertDialog(
+            onDismissRequest = { showEditPromptDialog = false; editingPrompt = null },
+            title = { Text("编辑提示词") },
+            text = {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    OutlinedTextField(
+                        value = editTitle,
+                        onValueChange = { editTitle = it },
+                        label = { Text("标题") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = editContent,
+                        onValueChange = { editContent = it },
+                        label = { Text("提示词内容") },
+                        minLines = 8,
+                        maxLines = 15,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
+                    Spacer(modifier = Modifier.height(8.dp))
+                    TextButton(
+                        onClick = {
+                            onRemoveCustomPrompt(editing.id)
+                            showEditPromptDialog = false
+                            editingPrompt = null
+                            Toast.makeText(context, "已删除", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("删除此提示词", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (editContent.isBlank()) {
+                        Toast.makeText(context, "提示词内容不能为空", Toast.LENGTH_SHORT).show()
+                    } else {
+                        onUpdateCustomPrompt(editing.id, editTitle, editContent)
+                        showEditPromptDialog = false
+                        editingPrompt = null
+                        Toast.makeText(context, "已保存", Toast.LENGTH_SHORT).show()
+                    }
+                }) { Text("保存", fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showEditPromptDialog = false
+                    editingPrompt = null
+                }) { Text("取消") }
+            }
         )
     }
 
@@ -292,19 +604,24 @@ fun SettingsScreen(
     }
 
     if (showPromptDialog) {
-        val promptModes = listOf(
-            PromptModeOption("NONE", "不注入", "最适合让 AI 直接阅读并分析项目结构，或你想完全自定义提示词时使用。", MaterialTheme.colorScheme.onSurface),
-            PromptModeOption("GENERAL", "通用开发", "扩展性极高，仅注入基本语法标准，适合简单的问答和自由发挥。", Color(0xFF4CAF50)),
-            PromptModeOption("ADVANCED", "进阶开发", "如同高级工程师全方位重构代码，并针对 3D 场景与物理深度优化。", Color(0xFFFFC107)),
-            PromptModeOption("TUB_STYLE", "TUB 同款", "在进阶基础上，强制 AI 生成 Python 一键构建脚本，效率翻三倍。", Color(0xFFF44336)),
-            PromptModeOption("CUSTOM", "自定义提示词", "从本地 .txt / .md 文件读取内容，注入到文档末尾。", Color(0xFF2196F3))
+        val noneMode = listOf(
+            PromptModeOption("NONE", "不注入", "完全不注入提示词，仅输出目录结构与代码内容。", MaterialTheme.colorScheme.onSurface)
+        )
+        val godotModes = listOf(
+            PromptModeOption("GENERAL", "通用开发", "基础开发规范：技术红线 + 开发指南 + 代码输出规范。", Color(0xFF4CAF50)),
+            PromptModeOption("ADVANCED", "进阶开发", "通用基础 + 改动前必问（缓存 / 重启 / 时序 / 多端一致性）。", Color(0xFFFFC107)),
+            PromptModeOption("TUB_GD", "TUB_GD", "Godot 专用：输出 Python 脚本，Tab 缩进，注解陷阱提醒。", Color(0xFFF44336))
+        )
+        val otherModes = listOf(
+            PromptModeOption("TUB_APP", "TUB_APP", "Android 专用：输出 Python 脚本，4 空格缩进，Java / Kotlin 语法。", Color(0xFF9C27B0)),
+            PromptModeOption("TUB_PY", "TUB_PY", "任意项目通用：输出 Python 脚本，自动识别缩进，安全原子写入。", Color(0xFF009688))
         )
         AlertDialog(
             onDismissRequest = { showPromptDialog = false },
             title = { Text("选择 AI 提示词模式") },
             text = {
                 Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-                    promptModes.forEach { option ->
+                    noneMode.forEach { option ->
                         val isSelected = (settings.promptMode == option.id)
                         Row(
                             modifier = Modifier.fillMaxWidth().selectable(selected = isSelected, onClick = {
@@ -355,6 +672,233 @@ fun SettingsScreen(
                             }
                         }
                     }
+                    
+                    Spacer(modifier = Modifier.height(8.dp))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        "Godot",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFFF44336),
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)
+                    )
+                    godotModes.forEach { option ->
+                        val isSelected = (settings.promptMode == option.id)
+                        Row(
+                            modifier = Modifier.fillMaxWidth().selectable(selected = isSelected, onClick = {
+                                onUpdateSettings { it.copy(promptMode = option.id) }
+                                showPromptDialog = false
+                            }).padding(vertical = 8.dp, horizontal = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = isSelected, 
+                                onClick = null,
+                                colors = RadioButtonDefaults.colors(selectedColor = option.color)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = option.title, 
+                                        color = if (isSelected) option.color else MaterialTheme.colorScheme.onSurface, 
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                        fontSize = 15.sp
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Box(
+                                        modifier = Modifier
+                                            .size(24.dp)
+                                            .clickable {
+                                                previewPromptMode = option.id
+                                                showPromptPreviewDialog = true
+                                            },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            Icons.Default.Visibility,
+                                            contentDescription = "预览提示词",
+                                            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                }
+                                Text(
+                                    text = option.desc,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                                    fontSize = 12.sp,
+                                    lineHeight = 16.sp,
+                                    modifier = Modifier.padding(top = 2.dp)
+                                )
+                            }
+                        }
+                    }
+                    
+                    Spacer(modifier = Modifier.height(8.dp))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        "其他",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)
+                    )
+                    otherModes.forEach { option ->
+                        val isSelected = (settings.promptMode == option.id)
+                        Row(
+                            modifier = Modifier.fillMaxWidth().selectable(selected = isSelected, onClick = {
+                                onUpdateSettings { it.copy(promptMode = option.id) }
+                                showPromptDialog = false
+                            }).padding(vertical = 8.dp, horizontal = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = isSelected, 
+                                onClick = null,
+                                colors = RadioButtonDefaults.colors(selectedColor = option.color)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = option.title, 
+                                        color = if (isSelected) option.color else MaterialTheme.colorScheme.onSurface, 
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                        fontSize = 15.sp
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Box(
+                                        modifier = Modifier
+                                            .size(24.dp)
+                                            .clickable {
+                                                previewPromptMode = option.id
+                                                showPromptPreviewDialog = true
+                                            },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            Icons.Default.Visibility,
+                                            contentDescription = "预览提示词",
+                                            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                }
+                                Text(
+                                    text = option.desc,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                                    fontSize = 12.sp,
+                                    lineHeight = 16.sp,
+                                    modifier = Modifier.padding(top = 2.dp)
+                                )
+                            }
+                        }
+                    }
+                    
+                    if (settings.customPrompts.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            "我的提示词",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)
+                        )
+                        settings.customPrompts.forEach { cp ->
+                            val isSelected = (settings.promptMode == "CUSTOM" && settings.selectedCustomPromptId == cp.id)
+                            Row(
+                                modifier = Modifier.fillMaxWidth()
+                                    .selectable(
+                                        selected = isSelected,
+                                        onClick = {
+                                            onSelectCustomPrompt(cp.id)
+                                            showPromptDialog = false
+                                        }
+                                    )
+                                    .padding(vertical = 6.dp, horizontal = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RadioButton(
+                                    selected = isSelected,
+                                    onClick = null,
+                                    colors = RadioButtonDefaults.colors(selectedColor = Color(0xFF2196F3))
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            cp.title,
+                                            fontSize = 14.sp,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                            color = if (isSelected) Color(0xFF2196F3) else MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Box(
+                                            modifier = Modifier
+                                                .background(Color(0xFF2196F3).copy(alpha = 0.15f), RoundedCornerShape(4.dp))
+                                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                        ) {
+                                            Text(
+                                                "自定义",
+                                                fontSize = 10.sp,
+                                                color = Color(0xFF2196F3),
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    }
+                                }
+                                IconButton(
+                                    onClick = {
+                                        previewCustomPromptId = cp.id
+                                        previewPromptMode = "CUSTOM"
+                                        showPromptPreviewDialog = true
+                                    },
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Visibility,
+                                        contentDescription = "预览",
+                                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                                IconButton(
+                                    onClick = {
+                                        editingPrompt = cp
+                                        showEditPromptDialog = true
+                                    },
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Edit,
+                                        contentDescription = "编辑",
+                                        tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    
+                    Spacer(modifier = Modifier.height(8.dp))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = {
+                            showPromptDialog = false
+                            showAddPromptDialog = true
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("添加提示词")
+                    }
                 }
             },
             confirmButton = { TextButton(onClick = { showPromptDialog = false }) { Text("取消") } }
@@ -362,12 +906,38 @@ fun SettingsScreen(
     }
 
     if (showPromptPreviewDialog) {
-        val previewText = remember(previewPromptMode, settings.customPromptPath, settings.reasoningLevel) {
-            SourceMergeUtils.buildPrompt(previewPromptMode, "4.x", context, settings.customPromptPath, settings.reasoningLevel)
+        val previewText = remember(previewPromptMode, previewCustomPromptId, settings.customPrompts, settings.selectedCustomPromptId, settings.reasoningLevel, settings.planMode) {
+            if (previewCustomPromptId != null) {
+                val cp = settings.customPrompts.find { it.id == previewCustomPromptId }
+                SourceMergeUtils.buildPrompt(
+                    "CUSTOM", "4.x", context,
+                    customPromptContent = cp?.content ?: "",
+                    customPromptTitle = cp?.title ?: "",
+                    reasoningLevel = settings.reasoningLevel,
+                    planMode = settings.planMode
+                )
+            } else {
+                val selectedPrompt = settings.customPrompts.find { it.id == settings.selectedCustomPromptId }
+                SourceMergeUtils.buildPrompt(
+                    previewPromptMode, "4.x", context,
+                    customPromptContent = selectedPrompt?.content ?: "",
+                    customPromptTitle = selectedPrompt?.title ?: "",
+                    reasoningLevel = settings.reasoningLevel,
+                    planMode = settings.planMode
+                )
+            }
         }
         AlertDialog(
             onDismissRequest = { showPromptPreviewDialog = false },
-            title = { Text("提示词预览 · $previewModeTitle") },
+            title = {
+                val displayTitle = if (previewCustomPromptId != null) {
+                    val cp = settings.customPrompts.find { it.id == previewCustomPromptId }
+                    "自定义提示词预览 · ${cp?.title ?: "未命名"}"
+                } else {
+                    "提示词预览 · $previewModeTitle"
+                }
+                Text(displayTitle)
+            },
             text = {
                 SelectionContainer {
                     Text(
@@ -467,13 +1037,42 @@ fun SettingsScreen(
             Text(
                 text = when(settings.exportMode) {
                     "DIR_ONLY" -> "仅生成完整的文件目录树，不包含任何代码内容。"
-                    "PROJECT_CONFIG" -> "仅提取 project.godot 和 .cfg 等核心配置文件。"
+                    "PROJECT_CONFIG" -> "仅提取平台核心配置文件。"
                     else -> "生成完整目录树及所有纯文本代码内容。"
                 },
                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
                 fontSize = 12.sp,
                 modifier = Modifier.padding(start = 4.dp)
             )
+
+            if (settings.exportMode == "PROJECT_CONFIG") {
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    "配置平台",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    modifier = Modifier.padding(start = 4.dp, bottom = 8.dp)
+                )
+                SegmentedControl(
+                    options = listOf("Godot", "App"),
+                    selectedIndex = if (settings.configPlatform == "APP") 1 else 0,
+                    onSelected = { onUpdateSettings { s -> s.copy(configPlatform = if (it == 1) "APP" else "GODOT") } },
+                    icons = listOf(Icons.Default.Gamepad, Icons.Default.PhoneAndroid)
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = if (settings.configPlatform == "APP") {
+                        "提取 build.gradle / settings.gradle / AndroidManifest.xml / gradle.properties 等 Android 配置文件。"
+                    } else {
+                        "提取 project.godot / *.cfg 等 Godot 配置文件。"
+                    },
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp,
+                    modifier = Modifier.padding(start = 4.dp)
+                )
+            }
             
             Spacer(modifier = Modifier.height(16.dp))
             Row(
@@ -505,65 +1104,75 @@ fun SettingsScreen(
 
                 if (settings.promptMode != "NONE") {
                     Spacer(modifier = Modifier.height(16.dp))
-                    SectionTitle("推理等级", Icons.Default.Psychology)
+                    Row(
+                        modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface, RoundedCornerShape(16.dp)).padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("计划模式", color = MaterialTheme.colorScheme.onBackground)
+                            Text("开启后，AI 先给方案、等用户确认后才生成代码", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f), fontSize = 12.sp)
+                        }
+                        Switch(
+                            checked = settings.planMode,
+                            onCheckedChange = { onUpdateSettings { s -> s.copy(planMode = it) } }
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+                    SectionTitle("思考强度", Icons.Default.Psychology)
                     LiquidReasoningSlider(
-                        selectedIndex = when(settings.reasoningLevel) { "LOW" -> 0; "HIGH" -> 1; "MAX" -> 2; else -> 1 },
-                        onSelected = { onUpdateSettings { s -> s.copy(reasoningLevel = when(it) { 0 -> "LOW"; 1 -> "HIGH"; else -> "MAX" }) } }
+                        selectedIndex = when(settings.reasoningLevel) { "NO" -> 0; "LOW" -> 1; "HIGH" -> 2; "MAX" -> 3; else -> 2 },
+                        onSelected = { onUpdateSettings { s -> s.copy(reasoningLevel = when(it) { 0 -> "NO"; 1 -> "LOW"; 2 -> "HIGH"; else -> "MAX" }) } }
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
                         text = when(settings.reasoningLevel) {
-                            "LOW" -> "聚焦创意与玩法，代码直白，极速实现原型。"
-                            "HIGH" -> "引入 Godot 4.x 规范审查，确保信号安全、无内存泄漏。"
-                            else -> "开启对抗性测试，穷举边界条件，极致优化防崩坏。"
+                            "NO" -> "不注入思考强度提示词，由 AI 自行决定思考深度。"
+                            "LOW" -> "快速给出回答，跳过方案权衡和边界推演，优先拿到可用结果。"
+                            "HIGH" -> "正常深度思考，聚焦主线逻辑与关键输入，必要处做校验和异常处理。"
+                            else -> "深度思考，对抗性推演，主动寻找潜在失败路径，覆盖已知边界和风险。"
                         },
                         color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
                         fontSize = 12.sp,
+                        lineHeight = 17.sp,
                         modifier = Modifier.padding(start = 4.dp)
                     )
                 }
 
                 if (settings.promptMode == "CUSTOM") {
                     Spacer(modifier = Modifier.height(8.dp))
-                    var customPathText by remember { mutableStateOf(settings.customPromptPath) }
-                    LaunchedEffect(settings.customPromptPath) { customPathText = settings.customPromptPath }
-                    OutlinedTextField(
-                        value = customPathText,
-                        onValueChange = { newText ->
-                            customPathText = newText.replace("\n", "").replace("\r", "")
-                        },
-                        label = { Text("提示词文件路径", maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                        placeholder = { Text("/storage/emulated/0/Documents/\nprompt.txt", maxLines = 2) },
-                        supportingText = { Text("仅支持 .txt 或 .md 文件", fontSize = 11.sp) },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 84.dp, max = 100.dp)
-                            .onFocusChanged { focusState ->
-                                if (!focusState.isFocused) {
-                                    val path = customPathText.trim()
-                                    when {
-                                        path.isEmpty() -> {
-                                            if (settings.customPromptPath.isNotEmpty()) {
-                                                onUpdateSettings { it.copy(customPromptPath = "") }
-                                            }
-                                        }
-                                        !(path.lowercase().endsWith(".txt") || path.lowercase().endsWith(".md")) -> {
-                                            invalidPathValue = path
-                                            customPathText = ""
-                                            onUpdateSettings { it.copy(customPromptPath = "") }
-                                            showInvalidPromptPathDialog = true
-                                        }
-                                        path != settings.customPromptPath -> {
-                                            onUpdateSettings { it.copy(customPromptPath = path) }
-                                        }
-                                    }
-                                }
-                            },
-                        singleLine = false,
-                        minLines = 1,
-                        maxLines = 2,
-                        leadingIcon = { Icon(Icons.Default.Description, contentDescription = null) }
-                    )
+                    val selectedPrompt = settings.customPrompts.find { it.id == settings.selectedCustomPromptId }
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Default.Description,
+                                contentDescription = null,
+                                tint = Color(0xFF2196F3),
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    "当前提示词",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                )
+                                Text(
+                                    selectedPrompt?.title ?: "未选择",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (selectedPrompt != null) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error
+                                )
+                            }
+                        }
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(16.dp))
@@ -713,6 +1322,48 @@ fun SettingsScreen(
                 }
             }
 
+            Spacer(modifier = Modifier.height(24.dp))
+
+            SectionTitle("配置管理", Icons.Default.Settings)
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        "将当前所有设置与历史记录导出为 JSON 配置文件，可用于备份或在其他设备上恢复。",
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                        fontSize = 12.sp,
+                        lineHeight = 18.sp
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        OutlinedButton(
+                            onClick = {
+                                val ts = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(java.util.Date())
+                                exportConfigLauncher.launch("TUB_GD_Config_$ts.json")
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Icon(Icons.Default.Upload, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("导出配置")
+                        }
+                        OutlinedButton(
+                            onClick = { importConfigLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("导入配置")
+                        }
+                    }
+                }
+            }
+
             Spacer(modifier = Modifier.height(32.dp))
 
             Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -730,8 +1381,8 @@ fun SettingsScreen(
                             Text(">/<", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
                         }
                         Spacer(modifier = Modifier.height(16.dp))
-                        Text("Godot整合工具", color = MaterialTheme.colorScheme.onSurface, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                        Text("v2.3.81", color = MaterialTheme.colorScheme.onSurface.copy(alpha=0.5f), fontSize = 12.sp)
+                        Text("TUB_Code_md", color = MaterialTheme.colorScheme.onSurface, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                        Text("v3.6.3", color = MaterialTheme.colorScheme.onSurface.copy(alpha=0.5f), fontSize = 12.sp)
                         Spacer(modifier = Modifier.height(16.dp))
                         HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha=0.1f))
                         Spacer(modifier = Modifier.height(16.dp))
@@ -759,7 +1410,8 @@ fun SettingsScreen(
 fun LiquidReasoningSlider(selectedIndex: Int, onSelected: (Int) -> Unit) {
     val speedMillis = when (selectedIndex) {
         0 -> 6000
-        1 -> 4000
+        1 -> 5000
+        2 -> 4000
         else -> 2000
     }
 
@@ -774,15 +1426,16 @@ fun LiquidReasoningSlider(selectedIndex: Int, onSelected: (Int) -> Unit) {
         ), label = "shift"
     )
 
-    val targetFraction = selectedIndex / 2f
+    val targetFraction = selectedIndex / 3f
     val animatedFraction by animateFloatAsState(
         targetValue = targetFraction,
         animationSpec = spring(dampingRatio = 0.7f, stiffness = Spring.StiffnessLow)
     )
 
     val activeColors = when (selectedIndex) {
-        0 -> listOf(Color(0xFF00E5FF), Color(0xFF00B0FF), Color(0xFF2979FF), Color(0xFF00B0FF), Color(0xFF00E5FF))
-        1 -> listOf(Color(0xFF2979FF), Color(0xFF651FFF), Color(0xFF7C4DFF), Color(0xFF651FFF), Color(0xFF2979FF))
+        0 -> listOf(Color(0xFF9E9E9E), Color(0xFFBDBDBD), Color(0xFF9E9E9E), Color(0xFFBDBDBD), Color(0xFF9E9E9E))
+        1 -> listOf(Color(0xFF00E5FF), Color(0xFF00B0FF), Color(0xFF2979FF), Color(0xFF00B0FF), Color(0xFF00E5FF))
+        2 -> listOf(Color(0xFF2979FF), Color(0xFF651FFF), Color(0xFF7C4DFF), Color(0xFF651FFF), Color(0xFF2979FF))
         else -> listOf(Color(0xFF00E5FF), Color(0xFF7C4DFF), Color(0xFFFF4081), Color(0xFF7C4DFF), Color(0xFF00E5FF))
     }
 
@@ -822,11 +1475,11 @@ fun LiquidReasoningSlider(selectedIndex: Int, onSelected: (Int) -> Unit) {
             Slider(
                 value = selectedIndex.toFloat(),
                 onValueChange = { 
-                    val newIndex = it.roundToInt().coerceIn(0, 2)
+                    val newIndex = it.roundToInt().coerceIn(0, 3)
                     if (newIndex != selectedIndex) onSelected(newIndex)
                 },
-                valueRange = 0f..2f,
-                steps = 1,
+                valueRange = 0f..3f,
+                steps = 2,
                 colors = SliderDefaults.colors(
                     thumbColor = Color.White,
                     activeTrackColor = Color.Transparent,
@@ -843,22 +1496,28 @@ fun LiquidReasoningSlider(selectedIndex: Int, onSelected: (Int) -> Unit) {
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Text(
-                text = "LOW",
+                text = "NO",
                 fontSize = 12.sp,
                 fontWeight = if (selectedIndex == 0) FontWeight.Bold else FontWeight.Normal,
-                color = if (selectedIndex == 0) Color(0xFF00E5FF) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                color = if (selectedIndex == 0) Color(0xFF9E9E9E) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+            )
+            Text(
+                text = "LOW",
+                fontSize = 12.sp,
+                fontWeight = if (selectedIndex == 1) FontWeight.Bold else FontWeight.Normal,
+                color = if (selectedIndex == 1) Color(0xFF00E5FF) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
             )
             Text(
                 text = "HIGH",
                 fontSize = 12.sp,
-                fontWeight = if (selectedIndex == 1) FontWeight.Bold else FontWeight.Normal,
-                color = if (selectedIndex == 1) Color(0xFFFFC107) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                fontWeight = if (selectedIndex == 2) FontWeight.Bold else FontWeight.Normal,
+                color = if (selectedIndex == 2) Color(0xFFFFC107) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
             )
             Text(
                 text = "MAX",
                 fontSize = 12.sp,
-                fontWeight = if (selectedIndex == 2) FontWeight.Bold else FontWeight.Normal,
-                color = if (selectedIndex == 2) Color(0xFFFF4081) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                fontWeight = if (selectedIndex == 3) FontWeight.Bold else FontWeight.Normal,
+                color = if (selectedIndex == 3) Color(0xFFFF4081) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
             )
         }
     }

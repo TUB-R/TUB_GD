@@ -6,15 +6,15 @@ plugins {
 }
 
 android {
-    namespace 'com.godot.tub.gd'
+    namespace 'com.tub.code.md'
     compileSdk 36
 
     defaultConfig {
-        applicationId 'com.godot.tub.gd'
+        applicationId 'com.tub.code.md'
         minSdk 28
         targetSdk 34
-        versionCode 2381
-        versionName '2.3.81'
+        versionCode 3603
+        versionName '3.6.3'
 
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
     }

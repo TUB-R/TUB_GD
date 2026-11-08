@@ -1,4 +1,4 @@
-package com.godot.tub.gd.ui.screens
+package com.tub.code.md.ui.screens
 
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -21,8 +21,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.godot.tub.gd.SelectedFile
-import com.godot.tub.gd.AppSettings
+import com.tub.code.md.SelectedFile
+import com.tub.code.md.AppSettings
 
 @Composable
 fun MultiFileScreen(

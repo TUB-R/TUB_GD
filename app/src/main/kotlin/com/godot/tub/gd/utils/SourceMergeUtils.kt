@@ -1,10 +1,10 @@
-package com.godot.tub.gd.utils
+package com.tub.code.md.utils
 
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.documentfile.provider.DocumentFile
-import com.godot.tub.gd.SelectedFile
+import com.tub.code.md.SelectedFile
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
@@ -12,25 +12,28 @@ import java.util.*
 object SourceMergeUtils {
     val DEFAULT_HARD_DIRS = setOf(".git", ".svn", ".idea", ".vscode", ".vs", ".gradle", "node_modules", "__pycache__", "build", "dist", ".godot", ".import")
     val DEFAULT_SOFT_EXTS = setOf(
-        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico", ".psd", ".tga", ".exr", ".hdr", ".dds", ".ktx", ".basis", 
-        ".gltf", ".glb", ".obj", ".fbx", ".dae", ".blend", 
+        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".psd", ".tga", ".exr", ".hdr", ".dds", ".ktx", ".basis", 
+        ".glb", ".fbx", ".blend", 
         ".mp3", ".wav", ".ogg", ".mp4", ".ogv", 
-        ".zip", ".tar", ".gz", ".rar", ".7z", ".apk", ".exe", ".dll"
+        ".zip", ".tar", ".gz", ".rar", ".7z", ".apk", ".exe", ".dll",
+        ".res", ".scn", ".mesh", ".anim", ".material", ".font", ".fontdata", ".theme", ".translation",
+        ".ttf", ".otf", ".woff", ".woff2",
+        ".bin", ".dat", ".pck", ".pak",
+        ".so", ".dylib", ".a", ".lib", ".o"
     )
     
-    val TEXT_EXTS = setOf(
-        "kt", "java", "py", "gd", "c", "cpp", "h", "cs", "js", "ts", "html", "css", 
-        "xml", "json", "yaml", "yml", "toml", "gradle", "properties", "md", "txt", 
-        "tscn", "tres", "godot", "cfg", "sh", "bat", "gdshader", "glsl", "frag", "vert",
-        "svg", "import", "uid"
-    )
+    // TEXT_EXTS 白名单已移除：改用纯黑名单（DEFAULT_SOFT_EXTS / 用户自定义规则）
 
     data class FileNode(
         val name: String, val isDir: Boolean, val uri: Uri, val size: Long, 
         val documentFile: DocumentFile? = null, val children: MutableList<FileNode> = mutableListOf()
     )
 
-    data class ScanResult(val content: String, val godotVersion: String)
+    data class ScanResult(
+        val content: String, 
+        val godotVersion: String,
+        val binaryFiles: List<String> = emptyList()
+    )
 
     fun formatSize(size: Long): String {
         return if (size < 1024) "$size B"
@@ -41,7 +44,8 @@ object SourceMergeUtils {
     fun scanDirectory(
         context: Context, treeUri: Uri, outputFormat: String, exportMode: String, promptMode: String, reasoningLevel: String,
         softExcludes: Set<String>, hardExcludes: Set<String>, maxFileSizeKb: Int, showGlobalFileSize: Boolean,
-        customPromptPath: String = ""
+        customPromptContent: String = "", customPromptTitle: String = "", planMode: Boolean = false,
+        forceIncludeBinary: Boolean = false, configPlatform: String = "GODOT"
     ): ScanResult {
         val rootDoc = DocumentFile.fromTreeUri(context, treeUri) ?: return ScanResult("无法读取该文件夹", "Unknown")
         
@@ -50,7 +54,7 @@ object SourceMergeUtils {
         if (projectFile != null && projectFile.isFile) {
             try {
                 val text = context.contentResolver.openInputStream(projectFile.uri)?.bufferedReader()?.use { it.readText() } ?: ""
-                val regexFeatures = Regex("""config/features\s*=\s*PackedStringArray\("([^"]+)"""")
+                    val regexFeatures = Regex("""config/features\s*=\s*PackedStringArray\(\s*"([^"]+)"""")
                 val match = regexFeatures.find(text)
                 if (match != null) {
                     val rawVer = match.groupValues[1]
@@ -90,15 +94,19 @@ object SourceMergeUtils {
         }
         parseDir(rootDoc, rootNode)
 
-        val content = buildOutput(context, rootNode.name, rootNode, outputFormat, exportMode, promptMode, reasoningLevel, softExcludes, maxFileSizeKb, showGlobalFileSize, detectedVersion, customPromptPath)
-        return ScanResult(content, detectedVersion)
+        val binaryFiles = mutableListOf<String>()
+        val mergedSoftExcludes = softExcludes + DEFAULT_SOFT_EXTS
+        val content = buildOutput(context, rootNode.name, rootNode, outputFormat, exportMode, promptMode, reasoningLevel, mergedSoftExcludes, maxFileSizeKb, showGlobalFileSize, detectedVersion, customPromptContent, customPromptTitle, binaryFiles, planMode, forceIncludeBinary, configPlatform)
+        return ScanResult(content, detectedVersion, binaryFiles)
     }
 
     fun processMultipleFiles(
         context: Context, files: List<SelectedFile>, outputFormat: String, 
-        softExcludes: Set<String>, hardExcludes: Set<String>, maxFileSizeKb: Int, showGlobalFileSize: Boolean
+        softExcludes: Set<String>, hardExcludes: Set<String>, maxFileSizeKb: Int, showGlobalFileSize: Boolean,
+        forceIncludeBinary: Boolean = false
     ): ScanResult {
         val sb = StringBuilder()
+        val binaryFiles = mutableListOf<String>()
         val date = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date())
         val detectedVersion = ""
 
@@ -119,7 +127,8 @@ object SourceMergeUtils {
                 
                 val ext = name.substringAfterLast(".").lowercase()
                 val isHardFiltered = hardExcludes.contains(".$ext") || hardExcludes.contains(ext)
-                val isSoftFiltered = softExcludes.contains(".$ext") || softExcludes.contains(ext)
+                val mergedSoftExcludes = softExcludes + DEFAULT_SOFT_EXTS
+                val isSoftFiltered = mergedSoftExcludes.contains(".$ext") || mergedSoftExcludes.contains(ext)
                 
                 if (!isHardFiltered) {
                     val sizeAttr = if (showGlobalFileSize) " size=\"${formatSize(size)}\"" else ""
@@ -129,18 +138,19 @@ object SourceMergeUtils {
                     
                     if (isSoftFiltered) {
                         sb.append("      <![CDATA[\n[内容已省略：命中软排除规则]\n]]>\n")
-                    } else if (isTextFile(context, name, size, uri)) {
+                    } else if (!forceIncludeBinary && isBinaryFile(context, uri, size)) {
+                        binaryFiles.add(pathStr)
+                        sb.append("      <![CDATA[\n[二进制资源已省略]\n]]>\n")
+                    } else {
                         val rawText = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: ""
                         val text = rawText.replace("]]>", "]]]]><![CDATA[>")
                         sb.append("      <![CDATA[\n$text\n]]>\n")
-                    } else {
-                        sb.append("      <![CDATA[\n[二进制资源已省略]\n]]>\n")
                     }
                     sb.append("    </file>\n")
                 }
             }
             sb.append("  </files>\n</project>")
-            return ScanResult(sb.toString(), detectedVersion)
+            return ScanResult(sb.toString(), detectedVersion, binaryFiles)
         }
 
         val isMd = (outputFormat == "MARKDOWN")
@@ -161,7 +171,8 @@ object SourceMergeUtils {
             
             val ext = name.substringAfterLast(".").lowercase()
             val isHardFiltered = hardExcludes.contains(".$ext") || hardExcludes.contains(ext)
-            val isSoftFiltered = softExcludes.contains(".$ext") || softExcludes.contains(ext)
+            val mergedSoftExcludes = softExcludes + DEFAULT_SOFT_EXTS
+                val isSoftFiltered = mergedSoftExcludes.contains(".$ext") || mergedSoftExcludes.contains(ext)
             
             if (!isHardFiltered) {
                 val sizeStr = if (showGlobalFileSize) " (${formatSize(size)})" else ""
@@ -170,16 +181,17 @@ object SourceMergeUtils {
                 
                 if (isSoftFiltered) {
                     sb.append("> **[内容已省略]** 命中软排除规则过滤。\n\n")
-                } else if (isTextFile(context, name, size, uri)) {
+                } else if (!forceIncludeBinary && isBinaryFile(context, uri, size)) {
+                    binaryFiles.add(pathStr)
+                    sb.append("> **[内容已省略]** 二进制资源，文件大小: ${formatSize(size)}\n\n")
+                } else {
                     val text = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: ""
                     if (isMd) sb.append("```${getLang(ext)}\n").append(text).append("\n```\n\n")
                     else sb.append(text).append("\n\n")
-                } else {
-                    sb.append("> **[内容已省略]** 二进制资源，文件大小: ${formatSize(size)}\n\n")
                 }
             }
         }
-        return ScanResult(sb.toString(), detectedVersion)
+        return ScanResult(sb.toString(), detectedVersion, binaryFiles)
     }
 
     private fun getDisplayNameAndPath(context: Context, uri: Uri): Pair<String, String> {
@@ -213,7 +225,11 @@ object SourceMergeUtils {
     private fun buildOutput(
         context: Context, projectName: String, rootNode: FileNode, 
         outputFormat: String, exportMode: String, promptMode: String, reasoningLevel: String, softExcludes: Set<String>, maxFileSizeKb: Int, showGlobalFileSize: Boolean,
-        godotVersion: String, customPromptPath: String = ""
+        godotVersion: String, customPromptContent: String = "", customPromptTitle: String = "",
+        binaryFiles: MutableList<String> = mutableListOf(),
+        planMode: Boolean = false,
+        forceIncludeBinary: Boolean = false,
+        configPlatform: String = "GODOT"
     ): String {
         val sb = StringBuilder()
         val date = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date())
@@ -225,7 +241,7 @@ object SourceMergeUtils {
                 fun extractConfigs(node: FileNode, path: String) {
                     if (!node.isDir) {
                         val ext = node.name.substringAfterLast(".").lowercase()
-                        if (ext == "godot" || ext == "cfg") {
+                        if (shouldExtractConfigFile(node.name, configPlatform)) {
                             val relPath = if (path.isEmpty()) node.name else "$path/${node.name}"
                             val sizeAttr = if (showGlobalFileSize) " size=\"${formatSize(node.size)}\"" else ""
                             val lang = getLang(ext)
@@ -248,7 +264,7 @@ object SourceMergeUtils {
                 fun extractConfigs(node: FileNode, path: String) {
                     if (!node.isDir) {
                         val ext = node.name.substringAfterLast(".").lowercase()
-                        if (ext == "godot" || ext == "cfg") {
+                        if (shouldExtractConfigFile(node.name, configPlatform)) {
                             val relPath = if (path.isEmpty()) node.name else "$path/${node.name}"
                             val sizeStr = if (showGlobalFileSize) " (${formatSize(node.size)})" else ""
                             try {
@@ -279,7 +295,8 @@ object SourceMergeUtils {
                     if (!node.isDir) {
                         val relPath = if (path.isEmpty()) node.name else "$path/${node.name}"
                         val ext = node.name.substringAfterLast(".").lowercase()
-                        val isSoftFiltered = softExcludes.contains(".$ext") || softExcludes.contains(ext)
+                        val mergedSoftExcludes = softExcludes + DEFAULT_SOFT_EXTS
+                val isSoftFiltered = mergedSoftExcludes.contains(".$ext") || mergedSoftExcludes.contains(ext)
                         
                         val sizeAttr = if (showGlobalFileSize) " size=\"${formatSize(node.size)}\"" else ""
                         val lang = getLang(ext)
@@ -289,7 +306,10 @@ object SourceMergeUtils {
                             sb.append("      <![CDATA[\n[内容已省略：命中软排除规则]\n]]>\n")
                         } else if (node.size > maxFileSizeKb * 1024L) {
                             sb.append("      <![CDATA[\n[内容已省略：文件超限]\n]]>\n")
-                        } else if (isTextFile(context, node)) {
+                        } else if (!forceIncludeBinary && isBinaryFile(context, node.uri, node.size)) {
+                            binaryFiles.add(relPath)
+                            sb.append("      <![CDATA[\n[二进制资源已省略]\n]]>\n")
+                        } else {
                             try {
                                 val rawText = context.contentResolver.openInputStream(node.uri)?.bufferedReader()?.use { it.readText() } ?: ""
                                 val text = rawText.replace("]]>", "]]]]><![CDATA[>")
@@ -297,8 +317,6 @@ object SourceMergeUtils {
                             } catch (e: Exception) {
                                 sb.append("      <![CDATA[\n无法读取\n]]>\n")
                             }
-                        } else {
-                            sb.append("      <![CDATA[\n[二进制资源已省略]\n]]>\n")
                         }
                         sb.append("    </file>\n")
                     } else {
@@ -311,7 +329,7 @@ object SourceMergeUtils {
             }
             
             if (exportMode == "FULL_EXPORT" && promptMode != "NONE") {
-                sb.append("  <prompt>\n    <![CDATA[\n").append(buildPrompt(promptMode, godotVersion, context, customPromptPath, reasoningLevel)).append("\n]]>\n  </prompt>\n")
+                sb.append("  <prompt>\n    <![CDATA[\n").append(buildPrompt(promptMode, godotVersion, context, customPromptContent, customPromptTitle, reasoningLevel, planMode)).append("\n]]>\n  </prompt>\n")
             }
             sb.append("</project>")
             return sb.toString()
@@ -346,7 +364,8 @@ object SourceMergeUtils {
                     fileIndex++
                     val relPath = if (path.isEmpty()) node.name else "$path/${node.name}"
                     val ext = node.name.substringAfterLast(".").lowercase()
-                    val isSoftFiltered = softExcludes.contains(".$ext") || softExcludes.contains(ext)
+                    val mergedSoftExcludes = softExcludes + DEFAULT_SOFT_EXTS
+                val isSoftFiltered = mergedSoftExcludes.contains(".$ext") || mergedSoftExcludes.contains(ext)
                     
                     val sizeStr = if (showGlobalFileSize) " (${formatSize(node.size)})" else ""
                     if (isMd) sb.append("### [$fileIndex/$totalFiles] $projectName/$relPath$sizeStr\n\n")
@@ -356,7 +375,10 @@ object SourceMergeUtils {
                         sb.append("> **[内容已省略]** 此处存在软排除规则过滤。\n\n")
                     } else if (node.size > maxFileSizeKb * 1024L) {
                         sb.append("> **[内容超限已忽略]** 文件大小 ${formatSize(node.size)}，超过设定上限 ${maxFileSizeKb} KB。\n\n")
-                    } else if (isTextFile(context, node)) {
+                    } else if (!forceIncludeBinary && isBinaryFile(context, node.uri, node.size)) {
+                        binaryFiles.add(relPath)
+                        sb.append("> **[内容已省略]** 此处存在二进制资源文件。\n\n")
+                    } else {
                         try {
                             val text = context.contentResolver.openInputStream(node.uri)?.bufferedReader()?.use { it.readText() } ?: ""
                             if (isMd) sb.append("```${getLang(ext)}\n").append(text).append("\n```\n\n")
@@ -364,8 +386,6 @@ object SourceMergeUtils {
                         } catch (e: Exception) {
                             sb.append("> 无法读取内容\n\n")
                         }
-                    } else {
-                        sb.append("> **[内容已省略]** 此处存在二进制资源文件。\n\n")
                     }
                 } else {
                     val newPath = if (path.isEmpty()) node.name else "$path/${node.name}"
@@ -376,36 +396,74 @@ object SourceMergeUtils {
         }
 
         if (exportMode == "FULL_EXPORT" && promptMode != "NONE") {
-            val prompt = buildPrompt(promptMode, godotVersion, context, customPromptPath, reasoningLevel)
+            val prompt = buildPrompt(promptMode, godotVersion, context, customPromptContent, customPromptTitle, reasoningLevel, planMode)
             if (isMd) sb.append(prompt)
             else sb.append(prompt.replace("##", "").replace("**", ""))
         }
         return sb.toString()
     }
 
-    private fun isTextFile(context: Context, node: FileNode): Boolean {
-        return isTextFile(context, node.name, node.size, node.uri)
+    private fun shouldExtractConfigFile(fileName: String, configPlatform: String): Boolean {
+        return when (configPlatform) {
+            "APP" -> {
+                val lower = fileName.lowercase()
+                lower == "build.gradle" ||
+                lower == "build.gradle.kts" ||
+                lower == "settings.gradle" ||
+                lower == "settings.gradle.kts" ||
+                lower == "gradle.properties" ||
+                lower == "gradle-wrapper.properties" ||
+                lower == "androidmanifest.xml" ||
+                lower == "proguard-rules.pro" ||
+                lower == "local.properties"
+            }
+            else -> {
+                val lower = fileName.lowercase()
+                val ext = fileName.substringAfterLast(".").lowercase()
+                lower == "project.godot" ||
+                lower == "project.binary" ||
+                lower == "export_presets.cfg" ||
+                lower == "override.cfg" ||
+                ext == "godot" ||
+                ext == "cfg"
+            }
+        }
     }
 
-    private fun isTextFile(context: Context, fileName: String, size: Long, uri: Uri): Boolean {
-        val ext = fileName.substringAfterLast(".").lowercase()
-        val lowerName = fileName.lowercase()
-        if (TEXT_EXTS.contains(ext)) return true
-        if (lowerName == ".gitignore" || lowerName == ".editorconfig" || lowerName == ".gitattributes" || lowerName == ".nomedia") return true
-        
-        if (size in 1..102400) {
-            try {
-                context.contentResolver.openInputStream(uri)?.use { input ->
-                    val buffer = ByteArray(1024)
-                    val read = input.read(buffer)
-                    for (i in 0 until read) {
-                        if (buffer[i] == 0.toByte()) return false
-                    }
-                    return true
+    private fun isBinaryFile(context: Context, uri: Uri, size: Long): Boolean {
+        if (size == 0L) return false
+        return try {
+            val stream = context.contentResolver.openInputStream(uri) ?: return false
+            stream.use { input ->
+                val buffer = ByteArray(1024)
+                val read = input.read(buffer)
+                if (read <= 0) return false
+
+                // UTF-8 BOM: EF BB BF —— 确定是文本
+                if (read >= 3 &&
+                    (buffer[0].toInt() and 0xFF) == 0xEF &&
+                    (buffer[1].toInt() and 0xFF) == 0xBB &&
+                    (buffer[2].toInt() and 0xFF) == 0xBF
+                ) {
+                    return false
                 }
-            } catch (_: Exception) {}
+                // UTF-16 BOM: FF FE (LE) / FE FF (BE) —— 确定是文本
+                if (read >= 2) {
+                    val b0 = buffer[0].toInt() and 0xFF
+                    val b1 = buffer[1].toInt() and 0xFF
+                    if ((b0 == 0xFF && b1 == 0xFE) || (b0 == 0xFE && b1 == 0xFF)) {
+                        return false
+                    }
+                }
+                // 无 BOM 时退回 0x00 检测
+                for (i in 0 until read) {
+                    if (buffer[i] == 0.toByte()) return true
+                }
+            }
+            false
+        } catch (_: Exception) {
+            false
         }
-        return false
     }
 
     private fun buildTree(node: FileNode, prefix: String = "", showGlobalFileSize: Boolean = false): String {
@@ -479,32 +537,23 @@ object SourceMergeUtils {
         else -> ""
     }
 
-    fun buildPrompt(mode: String, version: String, context: Context? = null, customPromptPath: String = "", reasoningLevel: String = "HIGH"): String {
+    fun buildPrompt(mode: String, version: String, context: Context? = null, customPromptContent: String = "", customPromptTitle: String = "", reasoningLevel: String = "HIGH", planMode: Boolean = false): String {
         if (mode == "NONE") return ""
 
         if (mode == "CUSTOM") {
             val sb = StringBuilder()
-            sb.append("---\n## 🎮 自定义提示词\n\n")
-            if (context != null && customPromptPath.isNotBlank()) {
-                try {
-                    val file = File(customPromptPath)
-                    val lowerName = file.name.lowercase()
-                    when {
-                        !file.exists() || !file.isFile -> {
-                            sb.append("> **[自定义提示词加载失败]** 文件不存在：$customPromptPath")
-                        }
-                        !(lowerName.endsWith(".txt") || lowerName.endsWith(".md")) -> {
-                            sb.append("> **[自定义提示词加载失败]** 仅支持 .txt 或 .md 格式：$customPromptPath")
-                        }
-                        else -> {
-                            sb.append(file.readText())
-                        }
-                    }
-                } catch (e: Exception) {
-                    sb.append("> **[自定义提示词加载失败]** ${e.message}")
-                }
+            sb.append("---\n## 🎮 自定义提示词")
+            if (customPromptTitle.isNotBlank()) sb.append("：").append(customPromptTitle)
+            sb.append("\n\n")
+            if (customPromptContent.isBlank()) {
+                sb.append("> **[自定义提示词为空]** 请在设置中通过「添加提示词」录入内容。")
             } else {
-                sb.append("> **[未设置自定义提示词]** 请在设置中选择自定义提示词并填写文件路径。")
+                sb.append(customPromptContent)
+            }
+            
+            if (planMode) {
+                sb.append("\n---\n### ⚠️ 计划模式（已开启）\n\n")
+                sb.append("**先给方案，等用户确认后再输出代码。未确认前禁止输出完整实现、diff 或脚本。**\n\n")
             }
             
             appendReasoningLevel(sb, reasoningLevel)
@@ -517,6 +566,11 @@ object SourceMergeUtils {
         sb.append("---\n## 🎮 AI 创作提示（工具自动注入）\n\n")
         sb.append("### 身份与背景\n")
         sb.append("你是一个资深的 Godot $version 游戏开发者。当前上下文包含了一个完整的 Godot $version 游戏项目源码。\n\n")
+        
+        if (planMode) {
+            sb.append("### ⚠️ 计划模式（已开启）\n\n")
+            sb.append("**先给方案，等用户确认后再输出代码。未确认前禁止输出完整实现、diff 或脚本。**\n\n")
+        }
         
         sb.append("### Godot $version 技术红线\n")
         sb.append("- **缩进**：GDScript 官方规范使用 Tab（`\\t`），严禁 2/4 空格混用；Tab/空格不一致是工具修改失败的头号原因。\n")
@@ -538,54 +592,49 @@ object SourceMergeUtils {
         }
         sb.append("\n")
 
-        if (mode == "ADVANCED" || mode == "TUB_STYLE") {
-            sb.append("### 进阶开发指南（必读）\n")
-            sb.append("1. **场景理解**：请仔细阅读上下文中的 `.tscn` 文件，理解节点树（Node Tree）结构。明确各个节点（Camera3D, CharacterBody3D, Marker3D, UI 等）的层级和父子关系。\n")
-            sb.append("2. **物理与碰撞**：代码中涉及 `PhysicsRayQueryParameters3D` 时，请检查节点的 `collision_layer` 和 `collision_mask`，确保射线能正确命中目标。\n")
-            sb.append("3. **资源预加载**：对于确定一定会用到的资源（如特效场景、常用音频），请优先使用 `preload()`；对于动态加载的，使用 `load()`。\n")
-            sb.append("4. **UI 与 3D 空间**：所有 CanvasLayer 下的 UI 节点，其坐标独立于 3D 世界。处理屏幕中心准星时，请使用 `get_viewport().get_visible_rect().size / 2`。\n")
-            sb.append("5. **面向对象设计**：善用 `signal`（信号）解耦节点，避免硬编码强引用（如 `get_node(\"../../Player\")`），推荐使用分组 `get_tree().get_nodes_in_group(\"player_team\")`。\n\n")
+        sb.append("### 开发指南（必读）\n")
+        sb.append("1. **场景理解**：读 `.tscn`，理解节点树层级与父子关系。\n")
+        sb.append("2. **物理与碰撞**：涉及 `PhysicsRayQueryParameters3D` 时检查 `collision_layer` / `collision_mask`。\n")
+        sb.append("3. **资源加载**：确定会用到的用 `preload()`，动态加载的用 `load()`。\n")
+        sb.append("4. **UI 与 3D**：CanvasLayer 下 UI 坐标独立于 3D 世界；屏幕中心用 `get_viewport().get_visible_rect().size / 2`。\n")
+        sb.append("5. **解耦**：善用 `signal` 和分组，避免硬编码 `get_node(\"../../Player\")`。\n\n")
+
+        if (mode == "ADVANCED" || mode == "TUB_GD") {
+            sb.append("### 改动前必问（最容易忘的一层）\n")
+            sb.append("写代码前先想清楚：**这个改动在哪里被读取？读取方有没有缓存？改完要不要重启 / 清缓存 / 卸载重装？**\n\n")
+            sb.append("- 配置类文件（`project.godot` / `export_presets.cfg`）→ 清 `.godot/` + **完全关闭编辑器重开**；平台权限/签名/包名改动 → **卸载旧版再装**。\n")
+            sb.append("- 脚本 / 场景（`.gd` / `.tscn`）→ 保存即生效，**不要误报\"要清缓存\"**。\n")
+            sb.append("- 跨进程 / 跨网络时序（切场景后立刻通信、外部服务刚启动就连接）→ 加 0.3~0.5s 缓冲 + 接收端加 `is_inside_tree()` 之类守卫。\n")
+            sb.append("- 多端要算出相同结果的逻辑（初始位置、随机种子、状态分配）→ 用确定性输入（如 `peer_id % N`），**不要用本地计数器自增**。\n")
+            sb.append("- 第三方工具配置（隧道、代理、外部服务）→ 核对版本语法 + 重启服务生效。\n\n")
+            sb.append("**代码往往是对的，环境里的旧状态才是真凶。**\n\n")
         }
 
-        if (mode == "GENERAL" || mode == "ADVANCED") {
-            sb.append("### 代码输出规范（极重要）\n")
-            sb.append("当你直接输出代码时，请务必使用 **Tab 缩进**，严禁使用 2 个或 4 个空格。若你需要给出完整的 `.gd` 文件代码，请直接输出包含 Tab 格式的完整代码块，不要使用 `replace()` 或 `diff` 语法，以免用户复制粘贴后出现缩进错乱。\n\n")
-        }
+        sb.append("### 代码输出规范（极重要）\n")
+        sb.append("当你直接输出代码时，请务必使用 **Tab 缩进**，严禁使用 2 个或 4 个空格。若你需要给出完整的 `.gd` 文件代码，请直接输出包含 Tab 格式的完整代码块，不要使用 `replace()` 或 `diff` 语法，以免用户复制粘贴后出现缩进错乱。\n\n")
 
-        if (mode == "TUB_STYLE") {
+        if (mode == "TUB_GD") {
             sb.append("### TUB 自动化工作流（极高优先级）\n\n")
             sb.append("**核心目标：输出一个可直接在 Godot 项目根目录运行的纯 Python 脚本（默认文件名 `patch.py`），完成对 .gd 文件的可靠修改。宁可整文件重写，也不要用不可靠的局部替换。**\n\n")
-            
-            sb.append("#### 一、读写铁律（违反任何一条都会导致项目损坏或引擎报错）\n\n")
+            sb.append("#### 一、读写铁律\n")
             sb.append("1. **必须使用 `pathlib.Path`**，基于脚本自身定位项目根：\n")
             sb.append("   `ROOT = Path(__file__).resolve().parent`\n")
-            sb.append("2. **【绝对禁止】直接使用 `p.write_text()` 覆写原文件！**\n")
-            sb.append("   Godot 有文件监视器，直接截断覆写会导致它读到半截代码，从而报“与缓存不匹配”的致命错误。\n")
-            sb.append("3. **必须使用“安全原子写入（Safe Save）”策略**：先写临时文件，再原子重命名替换原文件。这能保证 Godot 读到的永远是完整文件，从而正常弹出“文件已修改”提示，而不是崩溃。请直接复制下面这个安全写入函数：\n\n")
+            sb.append("2. **【绝对禁止】直接使用 `p.write_text()` 覆写原文件！** Godot 有文件监视器，直接截断覆写会导致它读到半截代码，从而报\"与缓存不匹配\"的致命错误。\n")
+            sb.append("3. **必须使用\"安全原子写入（Safe Save）\"策略**：先写临时文件，再原子重命名替换原文件。请直接复制下面这个安全写入函数：\n\n")
             sb.append("```python\n")
             sb.append("def safe_write(rel_path: str, content: str) -> None:\n")
             sb.append("    p = ROOT / rel_path\n")
             sb.append("    p.parent.mkdir(parents=True, exist_ok=True)\n")
-            sb.append("    # 先写入临时文件\n")
             sb.append("    tmp = p.with_suffix(p.suffix + \".tmp\")\n")
             sb.append("    tmp.write_text(content, encoding=\"utf-8\", newline=\"\\n\")\n")
-            sb.append("    # 再原子重命名替换，避免 Godot 读到一半\n")
             sb.append("    tmp.replace(p)\n")
             sb.append("```\n\n")
-            sb.append("4. **GDScript 缩进必须是 Tab（`\\t`），严禁空格**。你在 Python 里拼装 GDScript 字符串时，每一级缩进都用 `\\t`，绝对不要用 2 个或 4 个空格。\n\n")
-            
-            sb.append("#### 二、修改策略（按可靠性从高到低）\n\n")
-            sb.append("**策略 A（首选）：整文件覆盖**\n")
-            sb.append("只要目标文件 ≤ 400 行，或你对函数边界没有 100% 把握，就直接输出完整的新文件内容，用 `safe_write()` 覆写。整文件覆盖最可靠，不存在匹配失败的问题。**本项目优先策略 A。**\n\n")
-            sb.append("**策略 B（次选）：函数级替换**\n")
-            sb.append("仅在满足全部条件时使用：\n")
-            sb.append("- 单文件 > 400 行\n")
-            sb.append("- 你能准确说出要修改的函数名\n\n")
-            sb.append("**禁止用 `str.replace` 或 `re.sub` 匹配多行 GDScript 代码**。请使用下面的 `replace_function()`：它通过 Tab 缩进扫描定位函数边界，能正确处理嵌套的 if/for/match，不受代码内容影响。\n\n")
-            
+            sb.append("4. **GDScript 缩进必须是 Tab（`\\t`）**，Python 里拼装 GDScript 时每一级缩进都用 `\\t`，绝不用空格。\n\n")
+            sb.append("#### 二、修改策略\n")
+            sb.append("**策略 A（首选）：整文件覆盖。** 目标文件 ≤ 400 行，或对函数边界没 100% 把握，就直接输出完整新文件用 `safe_write()` 覆写。最可靠。\n\n")
+            sb.append("**策略 B（次选）：函数级替换。** 仅在文件 > 400 行且能准确说出函数名时使用。**禁止 `str.replace` / `re.sub` 匹配多行 GDScript**，用下面的 `replace_function()`：\n\n")
             sb.append("```python\n")
             sb.append("def replace_function(source: str, func_name: str, new_func_src: str) -> str:\n")
-            sb.append("    # 通过缩进扫描替换 GDScript 函数。new_func_src 是含缩进的完整函数源码。\n")
             sb.append("    lines = source.split(\"\\n\")\n")
             sb.append("    start = None\n")
             sb.append("    base_indent = 0\n")
@@ -609,16 +658,28 @@ object SourceMergeUtils {
             sb.append("    new_lines = new_func_src.rstrip(\"\\n\").split(\"\\n\")\n")
             sb.append("    return \"\\n\".join(lines[:start] + new_lines + lines[end:])\n")
             sb.append("```\n\n")
-            
-            sb.append("#### 三、禁用清单（踩中任何一条都会导致修改失败或项目损坏）\n\n")
-            sb.append("- ❌ 禁止 `p.write_text()` 原地覆写（会触发引擎缓存报错）\n")
-            sb.append("- ❌ 禁止 `content.replace(\"多行代码\", \"...\")` 做多行替换（Tab / 空格 / 引号一处不一致就失败）\n")
-            sb.append("- ❌ 禁止 `re.sub` 匹配多行 GDScript（缩进不能用正则可靠匹配）\n")
-            sb.append("- ❌ 禁止用 `writelines` 且不指定 newline（会写入 `\\r\\n`）\n")
-            sb.append("- ❌ 禁止修改 `.uid` / `.import` / `.godot` 内部文件\n")
-            sb.append("- ❌ 禁止修改 `.tscn` 里的 `unique_id`（编辑器维护）\n\n")
-            
-            sb.append("#### 四、脚本模板（请直接复制使用）\n\n")
+            sb.append("**注解陷阱**：`replace_function` 从 `func xxx(` 起匹配，**函数上方的注解行（`@rpc` / `@export` / `@onready` / `@tool`）会原样保留**。所以新函数体**只写 `func` 行往下、不带注解**，否则会出现重复注解报错；要改注解参数只能单独匹配注解行或整文件覆盖。\n\n")
+                        sb.append("#### 二次修改流程（脚本执行失败 / 用户反馈不成功时）\n\n")
+            sb.append("**第一次修改：直接给出完整可执行脚本，让用户执行。**\n\n")
+            sb.append("如果用户反馈\"未成功\"或\"结果不对\"，**不要再盲目给第二个脚本**。请先输出「诊断预览」：\n\n")
+            sb.append("1. **可能的失败原因**：匹配锚点没找到？文件结构已变？缩进不一致？\n")
+            sb.append("2. **关键行的上下文**：把打算修改的位置前后 5-10 行贴出来，让用户核对\n")
+            sb.append("3. **本次的修改方案**：改哪几处、用什么策略、预期效果\n")
+            sb.append("4. 让用户确认或补充信息，**用户确认后**再给出新脚本\n\n")
+            sb.append("**为什么不直接盲改第二次？**\n\n")
+            sb.append("- 连续盲改会把文件改得更乱，出问题时更难回滚\n")
+            sb.append("- 用户看到预览能补充关键信息（\"你说的这行不在文件里\"、\"应该是另一处\"）\n")
+            sb.append("- 一个确认回合的成本，远低于第二次改错的成本\n\n")
+
+sb.append("#### 三、禁用清单\n")
+            sb.append("- ❌ `p.write_text()` 原地覆写\n")
+            sb.append("- ❌ `content.replace(\"多行代码\", ...)` / `re.sub` 匹配多行 GDScript\n")
+            sb.append("- ❌ `writelines` 不指定 `newline`（会写入 `\\r\\n`）\n")
+            sb.append("- ❌ 修改 `.uid` / `.import` / `.godot` 内部文件\n")
+            sb.append("- ❌ 修改 `.tscn` 里的 `unique_id`\n")
+            sb.append("- ❌ 改完配置类文件忘记提醒清缓存 / 重启\n")
+            sb.append("- ❌ 改完脚本 / 场景误报\"要清缓存\"\n\n")
+            sb.append("#### 四、脚本模板\n\n")
             sb.append("```python\n")
             sb.append("#!/usr/bin/env python3\n")
             sb.append("# -*- coding: utf-8 -*-\n")
@@ -636,23 +697,248 @@ object SourceMergeUtils {
             sb.append("def patch_function(rel_path: str, func_name: str, new_func_src: str) -> None:\n")
             sb.append("    p = ROOT / rel_path\n")
             sb.append("    src = p.read_text(encoding=\"utf-8\")\n")
-            sb.append("    new_src = replace_function(src, func_name, new_func_src)\n")
-            sb.append("    safe_write(rel_path, new_src)\n\n\n")
+            sb.append("    safe_write(rel_path, replace_function(src, func_name, new_func_src))\n\n\n")
             sb.append("if __name__ == \"__main__\":\n")
-            sb.append("    # 策略 A：整文件覆盖（推荐）\n")
-            sb.append("    safe_write(\"scripts/player.gd\", PLAYER_GD_SOURCE)\n\n")
-            sb.append("    # 策略 B：函数级替换（仅大文件用）\n")
+            sb.append("    # 策略 A（推荐）\n")
+            sb.append("    safe_write(\"scripts/player.gd\", PLAYER_GD_SOURCE)\n")
+            sb.append("    # 策略 B（仅大文件）\n")
             sb.append("    # patch_function(\"scripts/player.gd\", \"_physics_process\", NEW_PHYSICS_PROCESS)\n")
             sb.append("```\n\n")
-            
-            sb.append("#### 五、生成脚本后的自检清单\n\n")
-            sb.append("在输出末尾附上以下 Markdown 检查清单，逐项确认后再交付：\n\n")
-            sb.append("- [ ] 使用了 `safe_write()` 安全覆写，而不是直接覆盖\n")
-            sb.append("- [ ] 每级缩进都是 Tab，没有空格混入\n")
-            sb.append("- [ ] 读/写文件都指定了 `encoding=\"utf-8\"` 和 `newline=\"\\n\"`\n")
-            sb.append("- [ ] 明确说明用了「整文件覆盖」还是「函数级替换」，并给出理由\n")
-            sb.append("- [ ] 没有触碰 `.uid` / `.import` / `.tscn` 的 `unique_id`\n\n")
+            sb.append("#### 五、交付前自检\n\n")
+            sb.append("**代码层面**\n")
+            sb.append("- ☐ 用 `safe_write()` 而非直接覆写；缩进全 Tab；读写都指定 `encoding=\"utf-8\"` 和 `newline=\"\\n\"`\n")
+            sb.append("- ☐ 说明用了「整文件覆盖」还是「函数级替换」及理由\n")
+            sb.append("- ☐ `replace_function` 替换后，目标函数上方无残留重复注解\n\n")
+            sb.append("**环境层面**\n")
+            sb.append("- ☐ 改配置类文件 → 提醒清 `.godot/` + 重启；平台权限/签名 → 提醒卸载重装\n")
+            sb.append("- ☐ 改脚本/场景 → 明确告知\"保存即生效\"，不误报清缓存\n")
+            sb.append("- ☐ 涉及时序/多端一致性 → 用延迟缓冲 + 守卫 + 确定性输入\n\n")
         }
+        if (mode == "TUB_APP") {
+            val sb2 = StringBuilder()
+            sb2.append("---\n## 📱 TUB_APP 安卓项目 Python 脚本模式\n\n")
+            sb2.append("### 身份与背景\n")
+            sb2.append("你是一个资深的 Android 应用开发者（Java + Kotlin）。当前上下文是一个 Android 项目的完整源码。\n\n")
+            
+            if (planMode) {
+                sb2.append("### ⚠️ 计划模式（已开启）\n\n")
+                sb2.append("**先给方案，等用户确认后再输出代码。未确认前禁止输出完整实现、diff 或脚本。**\n\n")
+            }
+            
+            sb2.append("### Android 技术红线\n")
+            sb2.append("- Java / Kotlin 使用 **4 个空格**缩进，**严禁 Tab**（和 GDScript 相反）。\n")
+            sb2.append("- 读写文件统一 UTF-8，中文字符不要被破坏（出现 `?` / `�` / 乱码即视为失败）。\n")
+            sb2.append("- 遵守 Android / Gradle 标准项目结构：`app/src/main/java`、`app/src/main/res`、`app/build.gradle` 等。\n")
+            sb2.append("- 修改 `AndroidManifest.xml` / `build.gradle` 等配置类文件后，提醒用户 Sync / Clean / 重装 APK。\n\n")
+            
+            sb2.append("### 一、读写铁律\n")
+            sb2.append("1. **必须用 `pathlib.Path`**，基于脚本自身定位项目根：`ROOT = Path(__file__).resolve().parent`\n")
+            sb2.append("2. **必须用 UTF-8 编码读写**，`encoding=\"utf-8\"` 是硬性要求，否则中文字符会乱码。\n")
+            sb2.append("3. **必须用安全原子写入**：先写 `.tmp` 再 `replace()`，避免 IDE 读到半截文件：\n\n")
+            sb2.append("```python\n")
+            sb2.append("def safe_write(rel_path: str, content: str) -> None:\n")
+            sb2.append("    p = ROOT / rel_path\n")
+            sb2.append("    p.parent.mkdir(parents=True, exist_ok=True)\n")
+            sb2.append("    tmp = p.with_suffix(p.suffix + \".tmp\")\n")
+            sb2.append("    tmp.write_text(content, encoding=\"utf-8\", newline=\"\\n\")\n")
+            sb2.append("    tmp.replace(p)\n")
+            sb2.append("```\n\n")
+            sb2.append("4. **Java / Kotlin 缩进用 4 个空格**，Python 里拼装代码字符串时每一级缩进都是 4 个空格。\n\n")
+            
+            sb2.append("### 二、修改策略\n")
+            sb2.append("**策略 A（首选）：整文件覆盖。** 目标文件 ≤ 400 行，或对方法边界没 100% 把握，直接输出完整新文件用 `safe_write()` 覆写。\n\n")
+            sb2.append("**策略 B（次选）：函数级替换。** 仅在文件 > 400 行且能准确说出方法名时使用。**禁止 `str.replace` / `re.sub` 匹配多行 Java/Kotlin 代码**，用下面的 `replace_method()`：\n\n")
+            sb2.append("```python\n")
+            sb2.append("def replace_method(source: str, sig_prefix: str, new_method_src: str) -> str:\n")
+            sb2.append("    lines = source.split(\"\\n\")\n")
+            sb2.append("    start = None\n")
+            sb2.append("    base_indent = 0\n")
+            sb2.append("    for i, line in enumerate(lines):\n")
+            sb2.append("        stripped = line.lstrip(\" \")\n")
+            sb2.append("        if sig_prefix in stripped and (stripped.startswith(\"public \") or stripped.startswith(\"private \") or stripped.startswith(\"protected \") or stripped.startswith(\"override \") or stripped.startswith(\"internal \") or stripped.startswith(\"fun \")):\n")
+            sb2.append("            start = i\n")
+            sb2.append("            base_indent = len(line) - len(stripped)\n")
+            sb2.append("            break\n")
+            sb2.append("    if start is None:\n")
+            sb2.append("        raise ValueError(f\"未找到方法: {sig_prefix}\")\n")
+            sb2.append("    end = len(lines)\n")
+            sb2.append("    for i in range(start + 1, len(lines)):\n")
+            sb2.append("        line = lines[i]\n")
+            sb2.append("        if not line.strip():\n")
+            sb2.append("            continue\n")
+            sb2.append("        cur = len(line) - len(line.lstrip(\" \"))\n")
+            sb2.append("        if cur <= base_indent:\n")
+            sb2.append("            end = i\n")
+            sb2.append("            break\n")
+            sb2.append("    new_lines = new_method_src.rstrip(\"\\n\").split(\"\\n\")\n")
+            sb2.append("    return \"\\n\".join(lines[:start] + new_lines + lines[end:])\n")
+            sb2.append("```\n\n")
+            sb2.append("**注解陷阱**：`replace_method` 从方法签名那一行起匹配，**上方的注解行（`@Override` / `@JvmStatic` / `@Suppress` 等）会原样保留**。所以新方法体**只写签名行往下、不带注解**，否则会出现重复注解报错；要改注解参数只能单独匹配注解行或整文件覆盖。\n\n")
+            
+            sb2.append("#### 二次修改流程（脚本执行失败 / 用户反馈不成功时）\n\n")
+            sb2.append("**第一次修改：直接给出完整可执行脚本，让用户执行。**\n\n")
+            sb2.append("如果用户反馈\"未成功\"或\"结果不对\"，**不要再盲目给第二个脚本**。请先输出「诊断预览」：\n\n")
+            sb2.append("1. **可能的失败原因**：匹配锚点没找到？文件结构已变？缩进不一致？\n")
+            sb2.append("2. **关键行的上下文**：把打算修改的位置前后 5-10 行贴出来，让用户核对\n")
+            sb2.append("3. **本次的修改方案**：改哪几处、用什么策略、预期效果\n")
+            sb2.append("4. 让用户确认或补充信息，**用户确认后**再给出新脚本\n\n")
+            sb2.append("**为什么不直接盲改第二次？**\n\n")
+            sb2.append("- 连续盲改会把文件改得更乱，出问题时更难回滚\n")
+            sb2.append("- 用户看到预览能补充关键信息（\"你说的这行不在文件里\"、\"应该是另一处\"）\n")
+            sb2.append("- 一个确认回合的成本，远低于第二次改错的成本\n\n")
+            
+            sb2.append("#### 三、禁用清单\n")
+            sb2.append("- ❌ `p.write_text()` 不带 `encoding=\"utf-8\"`（中文必乱码）\n")
+            sb2.append("- ❌ `content.replace(\"多行代码\", ...)` / `re.sub` 匹配多行 Java/Kotlin 代码\n")
+            sb2.append("- ❌ 缩进混入 Tab（Java/Kotlin 官方规范就是 4 空格）\n")
+            sb2.append("- ❌ 修改 `build/` / `.gradle/` / `.idea/` 下任何文件\n")
+            sb2.append("- ❌ 修改 `R.java` / 生成的 `BuildConfig.java`\n")
+            sb2.append("- ❌ 改完 `AndroidManifest.xml` / `build.gradle` 忘记提醒用户 Sync / 重装\n\n")
+            
+            sb2.append("#### 四、脚本模板\n\n")
+            sb2.append("```python\n")
+            sb2.append("#!/usr/bin/env python3\n")
+            sb2.append("# -*- coding: utf-8 -*-\n")
+            sb2.append("from pathlib import Path\n\n")
+            sb2.append("ROOT = Path(__file__).resolve().parent\n\n\n")
+            sb2.append("def safe_write(rel_path: str, content: str) -> None:\n")
+            sb2.append("    p = ROOT / rel_path\n")
+            sb2.append("    p.parent.mkdir(parents=True, exist_ok=True)\n")
+            sb2.append("    tmp = p.with_suffix(p.suffix + \".tmp\")\n")
+            sb2.append("    tmp.write_text(content, encoding=\"utf-8\", newline=\"\\n\")\n")
+            sb2.append("    tmp.replace(p)\n\n\n")
+            sb2.append("def replace_method(source: str, sig_prefix: str, new_method_src: str) -> str:\n")
+            sb2.append("    # 粘贴上面的实现\n")
+            sb2.append("    ...\n\n\n")
+            sb2.append("def patch_method(rel_path: str, sig_prefix: str, new_method_src: str) -> None:\n")
+            sb2.append("    p = ROOT / rel_path\n")
+            sb2.append("    src = p.read_text(encoding=\"utf-8\")\n")
+            sb2.append("    safe_write(rel_path, replace_method(src, sig_prefix, new_method_src))\n\n\n")
+            sb2.append("if __name__ == \"__main__\":\n")
+            sb2.append("    # 策略 A（推荐）\n")
+            sb2.append("    safe_write(\"app/src/main/java/com/example/MainActivity.java\", MAIN_ACTIVITY_JAVA)\n")
+            sb2.append("    # 策略 B（仅大文件）\n")
+            sb2.append("    # patch_method(\"app/src/main/java/com/example/MainActivity.java\", \"protected void onResume(\", NEW_ON_RESUME)\n")
+            sb2.append("```\n\n")
+            
+            sb2.append("#### 五、交付前自检\n\n")
+            sb2.append("**代码层面**\n")
+            sb2.append("- ☐ 用 `safe_write()` 而非直接覆写；缩进全 4 空格；读写都指定 `encoding=\"utf-8\"`\n")
+            sb2.append("- ☐ 说明用了「整文件覆盖」还是「函数级替换」及理由\n")
+            sb2.append("- ☐ `replace_method` 替换后，目标方法上方无残留重复注解\n\n")
+            sb2.append("**环境层面**\n")
+            sb2.append("- ☐ 改 `AndroidManifest.xml` / `build.gradle` → 提醒 Sync / Clean / 重装\n")
+            sb2.append("- ☐ 改 `res/` 下资源 → 提醒 Sync\n")
+            sb2.append("- ☐ 改 `.java` / `.kt` → 保存即生效，不误报清缓存\n\n")
+            
+            sb2.append("### 用户需求\n")
+            sb2.append("请仔细阅读上述项目结构及代码，等待用户的具体 App 开发需求。\n")
+            
+            appendReasoningLevel(sb2, reasoningLevel)
+            return sb2.toString()
+        }
+
+        if (mode == "TUB_PY") {
+            val sb3 = StringBuilder()
+            sb3.append("---\n## 🐍 TUB_PY 通用 Python 脚本模式\n\n")
+            sb3.append("### 身份与背景\n")
+            sb3.append("你是一个资深的软件工程师。当前上下文是一个完整项目源码。\n\n")
+            
+            if (planMode) {
+                sb3.append("### ⚠️ 计划模式（已开启）\n\n")
+                sb3.append("**先给方案，等用户确认后再输出代码。未确认前禁止输出完整实现、diff 或脚本。**\n\n")
+            }
+            
+            sb3.append("### 核心目标\n")
+            sb3.append("输出一个可直接运行在项目根目录的纯 Python 脚本（默认 `patch.py`），可靠地修改项目文件。**宁可整文件重写，也不要用不可靠的局部替换。**\n\n")
+            
+            sb3.append("### 一、读写铁律\n")
+            sb3.append("1. **必须用 `pathlib.Path`**，基于脚本自身定位项目根：`ROOT = Path(__file__).resolve().parent`\n")
+            sb3.append("2. **必须用安全原子写入**：先写 `.tmp` 再 `replace()`，避免编辑器 / 引擎监视器读到半截文件：\n\n")
+            sb3.append("```python\n")
+            sb3.append("def safe_write(rel_path: str, content: str) -> None:\n")
+            sb3.append("    p = ROOT / rel_path\n")
+            sb3.append("    p.parent.mkdir(parents=True, exist_ok=True)\n")
+            sb3.append("    tmp = p.with_suffix(p.suffix + \".tmp\")\n")
+            sb3.append("    tmp.write_text(content, encoding=\"utf-8\", newline=\"\\n\")\n")
+            sb3.append("    tmp.replace(p)\n")
+            sb3.append("```\n\n")
+            sb3.append("3. **编码统一 UTF-8，换行统一 `\\n`**，除非目标文件原本就是其他编码 / 换行。\n")
+            sb3.append("4. **缩进必须匹配目标文件的原有风格**：Tab / 2 空格 / 4 空格——改前先看几行，不要硬编码。\n\n")
+            
+            sb3.append("### 二、修改策略\n")
+            sb3.append("**策略 A（首选）：整文件覆盖。** 目标文件 ≤ 400 行，或对边界没 100% 把握，直接输出完整新文件用 `safe_write()` 覆写。最可靠。\n\n")
+            sb3.append("**策略 B（次选）：函数 / 块级替换。** 用缩进扫描定位边界（`replace_function`），自动识别缩进字符。\n\n")
+            sb3.append("**策略 C：行级锚点。** 对配置类文件（json / yaml / ini / cfg / xml），按唯一 key 定位替换，避免误伤。\n\n")
+            sb3.append("**禁止**：`str.replace` / `re.sub` 匹配多行代码，缩进 / 引号一处不一致就失败。\n\n")
+            
+            sb3.append("### 三、通用 replace_function（自动识别缩进）\n\n")
+            sb3.append("```python\n")
+            sb3.append("def detect_indent(source: str) -> str:\n")
+            sb3.append("    for line in source.split(\"\\n\"):\n")
+            sb3.append("        if line.startswith(\"\\t\"): return \"\\t\"\n")
+            sb3.append("        if line.startswith(\"    \"): return \"    \"\n")
+            sb3.append("        if line.startswith(\"  \"): return \"  \"\n")
+            sb3.append("    return \"    \"\n\n\n")
+            sb3.append("def replace_function(source: str, func_name: str, new_func_src: str, indent_char: str = \"    \") -> str:\n")
+            sb3.append("    lines = source.split(\"\\n\")\n")
+            sb3.append("    start = None\n")
+            sb3.append("    base_indent = 0\n")
+            sb3.append("    for i, line in enumerate(lines):\n")
+            sb3.append("        stripped = line.lstrip(indent_char)\n")
+            sb3.append("        for prefix in [\"func \", \"def \", \"function \", \"class \"]:\n")
+            sb3.append("            if stripped.startswith(prefix + func_name + \"(\") or stripped.startswith(prefix + func_name + \" \"):\n")
+            sb3.append("                start = i\n")
+            sb3.append("                base_indent = (len(line) - len(stripped)) // len(indent_char)\n")
+            sb3.append("                break\n")
+            sb3.append("        if start is not None: break\n")
+            sb3.append("    if start is None:\n")
+            sb3.append("        raise ValueError(f\"未找到: {func_name}\")\n")
+            sb3.append("    end = len(lines)\n")
+            sb3.append("    for i in range(start + 1, len(lines)):\n")
+            sb3.append("        line = lines[i]\n")
+            sb3.append("        if not line.strip(): continue\n")
+            sb3.append("        cur = (len(line) - len(line.lstrip(indent_char))) // len(indent_char)\n")
+            sb3.append("        if cur <= base_indent:\n")
+            sb3.append("            end = i; break\n")
+            sb3.append("    new_lines = new_func_src.rstrip(\"\\n\").split(\"\\n\")\n")
+            sb3.append("    return \"\\n\".join(lines[:start] + new_lines + lines[end:])\n")
+            sb3.append("```\n\n")
+            sb3.append("**调用前先探测缩进**：`indent = detect_indent(src)`，再传 `indent_char=indent`。\n\n")
+            
+            sb3.append("#### 二次修改流程（脚本执行失败 / 用户反馈不成功时）\n\n")
+            sb3.append("**第一次修改：直接给出完整可执行脚本，让用户执行。**\n\n")
+            sb3.append("如果用户反馈\"未成功\"或\"结果不对\"，**不要再盲目给第二个脚本**。请先输出「诊断预览」：\n\n")
+            sb3.append("1. **可能的失败原因**：匹配锚点没找到？文件结构已变？缩进不一致？\n")
+            sb3.append("2. **关键行的上下文**：把打算修改的位置前后 5-10 行贴出来，让用户核对\n")
+            sb3.append("3. **本次的修改方案**：改哪几处、用什么策略、预期效果\n")
+            sb3.append("4. 让用户确认或补充信息，**用户确认后**再给出新脚本\n\n")
+            sb3.append("**为什么不直接盲改第二次？**\n\n")
+            sb3.append("- 连续盲改会把文件改得更乱，出问题时更难回滚\n")
+            sb3.append("- 用户看到预览能补充关键信息（\"你说的这行不在文件里\"、\"应该是另一处\"）\n")
+            sb3.append("- 一个确认回合的成本，远低于第二次改错的成本\n\n")
+            
+            sb3.append("### 四、禁用清单\n")
+            sb3.append("- ❌ `p.write_text()` 直接覆写（会触发 IDE / 引擎的文件监视异常）\n")
+            sb3.append("- ❌ `content.replace(\"多行代码\", ...)` / `re.sub` 匹配多行\n")
+            sb3.append("- ❌ `writelines` 不指定 `newline`（会写入 `\\r\\n`）\n")
+            sb3.append("- ❌ 硬编码缩进字符（不同文件不同风格，必须探测）\n")
+            sb3.append("- ❌ 修改编译产物目录（build / dist / node_modules / .git / .gradle 等）\n\n")
+            
+            sb3.append("### 五、交付前自检\n")
+            sb3.append("- ☐ 用 `safe_write()` 而非直接覆写\n")
+            sb3.append("- ☐ 缩进已探测目标文件风格，未硬编码\n")
+            sb3.append("- ☐ 读写都指定 `encoding=\"utf-8\"` 和 `newline=\"\\n\"`\n")
+            sb3.append("- ☐ 说明用了「整文件覆盖」还是「函数级替换」及理由\n")
+            sb3.append("- ☐ 没触碰编译产物目录\n\n")
+            
+            sb3.append("### 用户需求\n")
+            sb3.append("请仔细阅读上述项目结构及代码，等待用户的具体修改需求。\n")
+            
+            appendReasoningLevel(sb3, reasoningLevel)
+            return sb3.toString()
+        }
+
 
         appendReasoningLevel(sb, reasoningLevel)
 
@@ -664,31 +950,20 @@ object SourceMergeUtils {
 
     private fun appendReasoningLevel(sb: StringBuilder, level: String) {
         when (level) {
+            "NO" -> {
+                // 不注入任何档位提示词
+            }
             "LOW" -> {
-                sb.append("### 🧠 推理等级：LOW (极速原型)\n")
-                sb.append("- **思考方向**：将重点完全放在“玩法实现”与“快速验证”上，不需要考虑复杂的工程化和极端情况。\n")
-                sb.append("- **实现要求**：\n")
-                sb.append("  1. 提供最直接、最短小精悍的代码，优先让功能立刻跑起来。\n")
-                sb.append("  2. 忽略冗余的防御性检查，假定输入和状态都是符合预期的。\n")
-                sb.append("  3. 不需要刻意优化性能，以“能跑”为最高准则。\n\n")
+                sb.append("### 🧠 思考强度：LOW\n")
+                sb.append("严格遵守 LOW 思考强度：快速给出回答。跳过方案权衡、边界推演、性能分析，优先让用户立刻拿到可用的结果。允许短答案、允许省略解释。\n\n")
             }
             "HIGH" -> {
-                sb.append("### 🧠 推理等级：HIGH (工程级标准)\n")
-                sb.append("- **思考方向**：注重代码工程化与 Godot 引擎规范，保证代码的可读性、可维护性与健壮性。\n")
-                sb.append("- **实现要求**：\n")
-                sb.append("  1. **严格使用 Godot 4.x API**：杜绝使用任何已废弃的方法。\n")
-                sb.append("  2. **生命周期与安全**：精确处理 `_ready`、`_process` 等节点生命周期；确保信号（Signal）连接安全、无内存泄漏。\n")
-                sb.append("  3. **类型安全**：变量定义必须包含类型提示（Type Hint），函数参数与返回值也要明确类型。\n")
-                sb.append("  4. **结构清晰**：代码需分段、有注释，变量命名符合驼峰/下划线规范。\n\n")
+                sb.append("### 🧠 思考强度：HIGH\n")
+                sb.append("严格遵守 HIGH 思考强度：正常深度思考。聚焦当前任务的主线逻辑与关键输入，必要处做校验和异常处理，其余细节正常推进，不主动扩展范围。\n\n")
             }
             "MAX" -> {
-                sb.append("### 🧠 推理等级：MAX (极致防御与优化)\n")
-                sb.append("- **思考方向**：将代码视为要直接上线的商业级项目，启动“对抗性测试”与“性能压榨”思维。\n")
-                sb.append("- **实现要求**：\n")
-                sb.append("  1. **极端的边界防御**：必须在代码中处理空值（null）、数组越界、快速连点、状态冲突等所有可能引发崩溃的隐患。\n")
-                sb.append("  2. **性能瓶颈检查**：确保 `_process` 或 `_physics_process` 中没有高开销的遍历或实例化操作；涉及大量计算时，必须给出优化方案。\n")
-                sb.append("  3. **内部自我审查**：在输出代码前，必须在内部进行逻辑推演（左右互搏），确认没有逻辑死锁、死循环或内存泄漏。\n")
-                sb.append("  4. **高内聚低耦合**：代码必须极其模块化，方便后续无限扩展。\n\n")
+                sb.append("### 🧠 思考强度：MAX\n")
+                sb.append("严格遵守 MAX 思考强度：深度思考。对方案做对抗性推演，主动寻找潜在失败路径，覆盖已知边界和风险后再交付，但不越界修改当前任务之外的内容。\n\n")
             }
         }
     }

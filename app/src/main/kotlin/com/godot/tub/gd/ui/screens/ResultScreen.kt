@@ -1,5 +1,5 @@
 
-package com.godot.tub.gd.ui.screens
+package com.tub.code.md.ui.screens
 
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -28,7 +28,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
-import com.godot.tub.gd.ExportResult
+import com.tub.code.md.ExportResult
 import java.io.File
 
 @Composable

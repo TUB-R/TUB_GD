@@ -1,4 +1,4 @@
-package com.godot.tub.gd.ui.screens
+package com.tub.code.md.ui.screens
 
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -24,7 +24,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.godot.tub.gd.ExportResult
+import com.tub.code.md.ExportResult
+import com.tub.code.md.CustomPrompt
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
@@ -36,6 +37,8 @@ fun HomeScreen(
     exportMode: String,
     promptMode: String,
     customPromptPath: String,
+    customPrompts: List<CustomPrompt>,
+    selectedCustomPromptId: String,
     maxHistoryCount: Int,
     historyList: List<ExportResult>,
     onFolderSelected: (Uri, Boolean) -> Unit,
@@ -158,7 +161,7 @@ fun HomeScreen(
             Text(">/<", color = Color.White, fontSize = 36.sp, fontWeight = FontWeight.Bold)
         }
         Spacer(modifier = Modifier.height(24.dp))
-        Text("Godot整合工具", color = MaterialTheme.colorScheme.onBackground, fontSize = 28.sp, fontWeight = FontWeight.Bold)
+        Text("TUB_Code_md", color = MaterialTheme.colorScheme.onBackground, fontSize = 28.sp, fontWeight = FontWeight.Bold)
         Spacer(modifier = Modifier.height(8.dp))
         Text("智能源码整合，一键生成\nAI 友好的精简上下文", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f), fontSize = 15.sp, textAlign = TextAlign.Center, lineHeight = 22.sp)
 
@@ -167,7 +170,7 @@ fun HomeScreen(
         ActionCard("选择项目文件夹", "扫描整个项目目录，智能过滤并整合", Icons.Default.Folder, MaterialTheme.colorScheme.primary) {
             val needsWarning = exportMode == "FULL_EXPORT" &&
                 promptMode == "CUSTOM" &&
-                !isCustomPromptValid(customPromptPath)
+                !isCustomPromptValid(customPrompts, selectedCustomPromptId)
             if (needsWarning) {
                 ignorePromptOnce = false
                 showPromptWarningDialog = true
@@ -177,7 +180,7 @@ fun HomeScreen(
             }
         }
         Spacer(modifier = Modifier.height(16.dp))
-        ActionCard("选择零散文件", "忽略大小限制，不识别版本，不注入提示词", Icons.Default.Description, Color(0xFF7CB342)) { 
+        ActionCard("选择零散文件", "忽略大小限制，单纯文件整合，不注入提示词", Icons.Default.Description, Color(0xFF7CB342)) { 
             onNavigateToMultiFile() 
         }
 
@@ -206,14 +209,8 @@ fun HomeScreen(
     }
 }
 
-private fun isCustomPromptValid(path: String): Boolean {
-    if (path.isBlank()) return false
-    val lower = path.lowercase()
-    if (!(lower.endsWith(".txt") || lower.endsWith(".md"))) return false
-    return try {
-        val f = File(path)
-        f.exists() && f.isFile
-    } catch (_: Exception) {
-        false
-    }
+private fun isCustomPromptValid(prompts: List<CustomPrompt>, selectedId: String): Boolean {
+    if (selectedId.isBlank()) return false
+    val p = prompts.find { it.id == selectedId } ?: return false
+    return p.content.isNotBlank()
 }

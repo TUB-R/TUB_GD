@@ -1,5 +1,5 @@
 
-package com.godot.tub.gd.ui.theme
+package com.tub.code.md.ui.theme
 
 import android.app.Activity
 import androidx.compose.foundation.isSystemInDarkTheme
